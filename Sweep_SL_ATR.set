@@ -1,0 +1,145 @@
+; AstroBot MTF Scanner v6.4 - STOP MULTIPLIER SWEEP
+;
+; PURPOSE. The full-year run showed a gross edge of about +0.068R per
+; trade against a spread cost of 0.078R. This sweep asks one question:
+; does a wider stop dilute that cost enough to leave a positive net?
+;
+; The diagnostic is deliberately stripped so that only the stop moves.
+;   InpMaxDrawdownPct = 0    the governor cannot cut a pass short, so
+;                            every pass measures the whole year
+;   InpAutoUseRiskPct = false, InpAutoFixedLot = 0.01
+;                            constant size, so a falling equity curve
+;                            cannot shrink later trades and truncate
+;                            the sample. R is per-trade normalised, so
+;                            SQN is unaffected by the sizing choice
+;   InpScoreDDCap     = 0    no drawdown penalty; the score IS the edge
+;   InpScoreMinTrades = 200  a pass with fewer trades scores 0
+;   InpScore          = 0    SQN over R multiples
+;
+; READ THE RESULT AS A SHAPE, NOT A WINNER. Look for a run of adjacent
+; multipliers that all score positive. A single tall bar between two
+; poor ones is noise. If nothing clears zero, the M1 signal does not
+; beat this spread and the next move is a higher signal timeframe.
+;
+; SECOND AXIS. InpTrailATRMult carries a ready range (2.0 to 4.0 step
+; 1.0) with its flag off. The trail is fixed in ATR while the entry
+; stop moves, so a wider stop makes the trail relatively tighter in R.
+; Tick that box to see the surface: 8 x 3 = 24 passes.
+;
+; TESTER SETTINGS: XAUUSD, M1, Every tick based on real ticks, the same
+; dates as the last run, and "Custom max" as the optimisation criterion.
+;
+; === Trading ===
+InpAllowTrading=true||false||0||true||N
+MagicNumber=20260726||20260726||1||202607260||N
+InpDefaultLot=0.01||0.01||0.001000||0.100000||N
+InpDefaultRisk=1.0||1.0||0.100000||10.000000||N
+InpMaxRiskPct=2.0||2.0||0.200000||20.000000||N
+InpMaxSpreadPoints=0||0||1||10||N
+; === Auto SL/TP (ATR source selectable in the panel) ===
+InpATRPeriod=14||14||1||140||N
+InpSL_ATR_Mult=1.5||1.5||0.150000||15.000000||N
+InpTP_RR=2.0||2.0||0.200000||20.000000||N
+; === Ensemble: STK + SLP (EMA structure and rate) ===
+InpEMAFast=9||9||1||90||N
+InpEMAMedium=21||21||1||210||N
+InpEMASlow=50||50||1||500||N
+InpStackSepATR=0.15||0.15||0.015000||1.500000||N
+InpSlopeATR=0.1||0.1||0.010000||1.000000||N
+; === Ensemble: DMI + RSI (movement and momentum) ===
+InpADXPeriod=14||14||1||140||N
+InpADXMin=25.0||25.0||2.500000||250.000000||N
+InpDIThresh=5.0||5.0||0.500000||50.000000||N
+InpRSIPeriod=14||14||1||140||N
+InpRSIBull=55.0||55.0||5.500000||550.000000||N
+InpRSIBear=45.0||45.0||4.500000||450.000000||N
+; === Ensemble: DON + AD (range position and pressure) ===
+InpDonchianBars=20||20||1||200||N
+InpDonchianPos=0.75||0.75||0.075000||7.500000||N
+InpADBars=5||5||1||50||N
+InpADThresh=0.25||0.25||0.025000||2.500000||N
+; === Ensemble: aggregation ===
+InpTFWeighting=0||0||0||2||N
+InpRangingWeight=0.5||0.5||0.050000||5.000000||N
+; === Filters ===
+UseNYSessionFilter=false||false||0||true||N
+NY_Session_Hour=12||12||1||120||N
+NY_Session_Minute=0||0||1||10||N
+Hours_Before_NY=1||1||1||10||N
+Hours_After_NY=2||2||1||20||N
+UseNewsFilter=false||false||0||true||N
+Minutes_Before_News=30||30||1||300||N
+Minutes_After_News=30||30||1||300||N
+; === Auto Trend Engine: signal ===
+InpEnableAutoTrading=true||false||0||true||N
+InpAutoMagic=20260727||20260727||1||202607270||N
+InpSignalTF=0||0||0||6||N
+InpAutoBuyPct=65.0||65.0||6.500000||650.000000||N
+InpAutoSellPct=35.0||35.0||3.500000||350.000000||N
+InpRequireSignalTFAgree=true||false||0||true||N
+InpRequireStack=true||false||0||true||N
+InpSkipRanging=true||false||0||true||N
+InpRespectFilters=true||false||0||true||N
+InpExitOnReversal=true||false||0||true||N
+; === Auto Trend Engine: sizing and stops ===
+; fixed lot for the diagnostic: a falling equity curve must not shrink
+; later trades and quietly truncate the sample
+InpAutoUseRiskPct=false||false||0||true||N
+InpAutoRiskPct=1.0||1.0||0.100000||10.000000||N
+InpAutoFixedLot=0.01||0.01||0.001000||0.100000||N
+; ---- THE SWEEP: 1.5 to 5.0 in steps of 0.5, eight passes ----
+InpAutoSL_ATR_Mult=1.5||1.5||0.500000||5.000000||Y
+InpAutoTP_RR=0.0||0.0||0.000000||0.000000||N
+InpMinSLPoints=0||0||1||10||N
+; === Auto Trend Engine: risk governors ===
+InpMaxPositions=3||3||1||30||N
+InpOnePerDirection=false||false||0||true||N
+InpCooldownBars=2||2||1||20||N
+InpMaxTradesPerDay=0||0||1||10||N
+InpDailyLossLimitPct=0.0||0.0||0.000000||0.000000||N
+InpMinBarsBetweenEntries=3||3||1||30||N
+InpStackMinSepATR=0.75||0.75||0.075000||7.500000||N
+InpMaxTotalRiskPct=3.0||3.0||0.300000||30.000000||N
+InpMaxSpreadATR=0.2||0.2||0.020000||2.000000||N
+; governor OFF: every pass must run the whole year to be comparable
+InpMaxDrawdownPct=0.0||0.0||0.000000||0.000000||N
+InpDD_Basis=0||0||0||1||N
+InpDD_FlattenOnBreach=false||false||0||true||N
+; === Trailing Stop ===
+InpTrailMode=2||0||0||3||N
+InpTrailTF=2||0||0||6||N
+; second axis, ready to tick: 2.0 / 3.0 / 4.0
+InpTrailATRMult=2.0||2.0||1.000000||4.000000||N
+InpTrailStartATR=1.0||1.0||0.100000||10.000000||N
+InpChandelierBars=22||22||1||220||N
+InpTrailStartPts=200||200||1||2000||N
+InpTrailDistPts=150||150||1||1500||N
+InpTrailStepPts=10||10||1||100||N
+InpTrailStepATR=0.05||0.05||0.005000||0.500000||N
+InpTrailMinSeconds=5||5||1||50||N
+InpTrailManagesManual=false||false||0||true||N
+InpUseBreakEven=true||false||0||true||N
+InpBE_TriggerPts=0||0||1||10||N
+InpBE_LockPts=20||20||1||200||N
+; === Measurement and state (v6.1) ===
+InpPersistState=false||false||0||true||N
+InpResetState=false||false||0||true||N
+InpJournal=0||0||0||2||N
+InpOptJournalFrames=false||false||0||true||N
+InpScore=0||0||0||2||N
+InpScoreMinTrades=200||200||1||2000||N
+InpScoreDDCap=0.0||0.0||0.000000||0.000000||N
+; === Safety (v6.2) ===
+InpDupGuard=true||false||0||true||N
+InpNoStopAction=0||0||0||1||N
+InpNoStopGraceSec=15||15||1||150||N
+; === Tester and weekend (v6.3) ===
+InpTesterReArmDays=0||0||1||10||N
+InpWeekendFlatten=true||false||0||true||N
+InpFridayCutoffHour=22||22||1||220||N
+InpFridayCutoffMin=0||0||1||10||N
+; === Panel ===
+Panel_X=12||12||1||120||N
+Panel_Y=12||12||1||120||N
+Panel_W=530||530||1||5300||N
+Panel_H=548||548||1||5480||N

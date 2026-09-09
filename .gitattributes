@@ -1,0 +1,23 @@
+# MQL5 sources are UTF-16LE with a BOM, which is what MetaEditor writes and
+# expects. Git treats UTF-16 as BINARY: without this, every change to a 3,952
+# line .mq5 shows as "Bin 425948 -> 425960 bytes" with no diff, no blame and no
+# merge. Measured, not assumed.
+#
+# working-tree-encoding stores UTF-8 in the repository — diffable, greppable,
+# reviewable on GitHub — and converts back to UTF-16LE+BOM on checkout, so the
+# files MetaEditor opens are byte-identical to what it wrote.
+#
+# Needs Git 2.18 or newer. On an older client the checkout is UTF-8 and
+# MetaEditor will complain; that is the trade, and it is worth it.
+*.mq5  working-tree-encoding=UTF-16LE-BOM text eol=crlf
+*.mqh  working-tree-encoding=UTF-16LE-BOM text eol=crlf
+
+# Presets are UTF-16LE+BOM too — verified, not assumed.
+*.set  working-tree-encoding=UTF-16LE-BOM text eol=crlf
+
+*.md   text eol=lf
+*.php  text eol=lf
+*.sql  text eol=lf
+
+# Compiled output is opaque either way.
+*.ex5  binary

@@ -1,0 +1,24 @@
+# ─── Compiled output ─────────────────────────────────────────────────────────
+# MetaEditor rebuilds this from source in seconds. A binary in the history is
+# also a binary that goes stale silently while the source moves on. Ship it as
+# a GitHub Release instead.
+*.ex5
+
+# ─── Compile log ─────────────────────────────────────────────────────────────
+# UTF-16 build output. It embeds absolute local paths and the MetaTrader
+# terminal GUID, neither of which belongs in a public repository.
+*.log
+
+# ─── Manual snapshots ────────────────────────────────────────────────────────
+# Superseded by git history from here on.
+/backup/
+
+# ─── Companion web service ───────────────────────────────────────────────────
+# Scanner.php and its migration are a CodeIgniter controller belonging to the
+# ride-trades site, not to this EA. They live with that project.
+/website/
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store
