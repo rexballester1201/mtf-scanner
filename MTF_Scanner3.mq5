@@ -713,10 +713,10 @@
 //+------------------------------------------------------------------+
 #property copyright "AstroBot MTF Scanner"
 #property link      "https://astrobot-ea.live"
-#property version   "6.94"
+#property version   "6.95"
 #property strict
 
-#define AB_VERSION "6.94"   // v6.1: one place for the number the ready-line and the journal print
+#define AB_VERSION "6.95"   // v6.1: one place for the number the ready-line and the journal print
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -1025,7 +1025,7 @@ input int      Panel_Y              = 12;                 // Panel_Y
 //--- clipped every longer line. The layout is width-derived now, so this
 //--- is a real knob: raise it if your display scaling is higher still.
 input int      Panel_W              = 620;                // Panel_W - client = W - 4; all columns derive from this
-input int      Panel_H              = 620;                // Panel_H - client = H - 24 (caption 22 + border 2); v6.0 +14 for the M1 row, v6.5 +72 for the verdict card
+input int      Panel_H              = 620;                // Panel_H - minimum height; the panel grows itself to fit (client = H - 24: caption 22 + border 2)
 
 //+------------------------------------------------------------------+
 //| Dark theme                                                       |
@@ -1047,6 +1047,8 @@ input int      Panel_H              = 620;                // Panel_H - client = 
 #define C_EDIT_BG C'44,50,66'
 #define C_SEP     C'48,54,70'
 #define C_TRACK   C'34,39,52'     // gauge track fill
+#define C_TABON   C'40,100,180'   // v6.95: the tab on show, and the frame around its content
+#define C_TABOFF  C'30,34,46'     // v6.95: the tabs behind it
 
 //+------------------------------------------------------------------+
 //| Timeframe set + analysis state                                   |
@@ -1297,32 +1299,86 @@ int TextPxWidth(const string s,const int fs,const string fn="Consolas")
 }
 
 //+------------------------------------------------------------------+
+//| v6.95: THE TAB STRIP                                             |
+//|                                                                  |
+//| Bias, history, hedge and stats were four stacked sections, and   |
+//| the panel had grown taller than most charts. CAppDialog minimises |
+//| itself on every chart change while the chart is shorter than the |
+//| dialog, so past that height the panel kept collapsing. The four  |
+//| now share one area under a row of tabs, between the filters and |
+//| the ticket.                                                      |
+//|                                                                  |
+//| The area is sized ONCE, to the tallest tab, and never changes    |
+//| with the selection. A panel that resized per tab would move the  |
+//| BUY and SELL buttons under the mouse, which a trading panel must |
+//| never do.                                                        |
+//|                                                                  |
+//| Only the tab on show is drawn each second. SetTab draws the new  |
+//| one before showing it, so a switch never flashes stale text.     |
+//+------------------------------------------------------------------+
+#define TAB_COUNT     4
+#define TAB_BIAS      0
+#define TAB_HIST      1
+#define TAB_HEDGE     2
+#define TAB_STATS     3
+#define TAB_BTN_H     22
+#define TAB_GAP       3
+#define TAB_ROWS      8     // lines under a tab's caption: now + 6 lookbacks + summary, or the stats grid + a finding
+#define TAB_CONTENT_H (24+TAB_ROWS*14)
+#define TAB_MAX_CTL   64    // controls registered to a tab
+
+//--- the tab on show. UI state like g_ui_auto: it survives a timeframe
+//--- change and starts on MARKET BIAS when the EA is attached.
+int g_uiTab = TAB_BIAS;
+
+//--- where the strip sits, and the offset that puts the ticket under it.
+//--- OnInit sizes the panel from the same numbers BuildControls lays it
+//--- out with, so the two can never drift apart.
+int TabStripY()     { return 176+(TF_COUNT-6)*14; }
+int PanelTicketDY() { return TabStripY()+TAB_BTN_H+TAB_CONTENT_H+6-240; }
+
+//+------------------------------------------------------------------+
 //| The panel                                                        |
 //+------------------------------------------------------------------+
 class CScannerPanel : public CAppDialog
 {
 private:
    CPanel  m_bg;
-   CPanel  m_band1, m_band2, m_band3, m_band4;
-   CPanel  m_sep1, m_sep2, m_sep3, m_sep4, m_sep5;
+   CPanel  m_band1, m_band3, m_band4;
+   CPanel  m_sep1, m_sep2, m_sep5;
 
    CLabel  m_sub, m_mtfHdr, m_col;
    CLabel  m_tf[TF_COUNT];
+   CLabel  m_fltHdr, m_flt;
+   //--- v6.95: the tab strip, the frame its content sits in, and a register
+   //--- of which control belongs to which tab
+   CButton m_tabBtn[TAB_COUNT];
+   CPanel  m_tabCard;
+   CWnd   *m_tw[TAB_MAX_CTL];
+   int     m_twTab[TAB_MAX_CTL];
+   int     m_twN;
+   int     m_inW;                          // text width inside the frame
+   //--- tab 0: overall market bias, with the verdict card (v6.5)
    CLabel  m_ovHdr, m_bias, m_gPct;
    CPanel  m_gTrack, m_gBuy, m_gSell, m_gMid;
-   //--- v6.5: the verdict card
    CPanel  m_bandV;
    CLabel  m_vHead, m_vLev, m_vPros, m_vCons;
-   //--- v6.93: signal history, directly under the verdict it qualifies
-   CPanel  m_bandHs;
+   int     m_vW;
+   //--- tab 1: signal history (v6.93)
    CLabel  m_hsHdr;
    CLabel  m_hs[MAX_HIST_ROWS];
    int     m_hsRows;
-   CLabel  m_fltHdr, m_flt;
+   //--- tab 2: exposure and hedging (v6.8)
+   CLabel  m_hHdr, m_hExpo, m_hNote;
+   CLabel  m_hRow[MAX_HEDGE_ROWS];
+   //--- tab 3: my stats (the v6.6 journal, read back)
+   CLabel  m_sHdr, m_sFind;
+   CLabel  m_sL[TRADER_TAB_ROWS], m_sR[TRADER_TAB_ROWS];
+   CButton m_btnReport;
+   int     m_colW, m_repW;
    CLabel  m_tkHdr, m_lbLot, m_lbRisk, m_lbCap, m_lbSL, m_lbTP, m_est, m_pos;
    CEdit   m_edLot, m_edRisk, m_edSL, m_edTP;
    CButton m_btnAuto, m_btnSize, m_btnAtrTF, m_btnBuy, m_btnSell, m_btnClose;
-   CButton m_btnStats;                     // v6.6: read the trader journal back
    //--- v4.0 auto engine strip
    CLabel  m_auHdr, m_auState, m_auStats, m_auMsg;
    CButton m_btnAutoOn, m_btnTrail, m_btnCloseAuto;
@@ -1331,16 +1387,12 @@ private:
    CLabel  m_wHdr;
    CLabel  m_wl[MAX_WATCH];
    int     m_wlRows;        // how many rows actually fit in the client area
-   //--- v6.8: exposure and hedging
-   CPanel  m_bandH;
-   CLabel  m_hHdr, m_hExpo;
-   CLabel  m_hRow[MAX_HEDGE_ROWS];
-   int     m_hRows;
    int     m_gaugeW;
    int     m_gaugeX;
    //--- v6.52: the widths every fitted label and button measures against
    int     m_lblW;     // full-width label
    int     m_btnW;     // one column
+   int     m_btn2W;    // v6.95: half a row - the two ticket toggles
 
 public:
    virtual bool Create(const long chart,const string name,const int subwin,
@@ -1358,20 +1410,33 @@ protected:
    //--- v6.52: set text that is guaranteed to fit, by measuring it
    void FitLabel(CLabel &l,string id,string text,color c,int fsWant,int maxPx);
    void FitButton(CButton &b,string id,string text,int fsWant,int maxPx);
+   //--- v6.95: tabs
+   void TabReg(const int t,CWnd &w);
+   bool TabLabel(const int t,CLabel &l,string id,int x,int y,int w,string txt,color c,int fs=8);
+   bool TabPanel(const int t,CPanel &p,string id,int x,int y,int w,int h,color bg,color bd=clrNONE);
+   void ApplyTabs();
+   void SetTab(const int t);
+   void RefreshBias(); void RefreshHist(); void RefreshHedge(); void RefreshStats();
+   virtual void Maximize(void);
 
    void OnBuy();  void OnSell();  void OnCloseAll();
-   void OnAuto(); void OnSize();  void OnAtrTF(); void OnStats();
+   void OnAuto(); void OnSize();  void OnAtrTF(); void OnReport();
+   void OnTab0(); void OnTab1();  void OnTab2();  void OnTab3();
    void OnAutoOn(); void OnTrail(); void OnCloseAuto();
    void OnEditLot(); void OnEditRisk(); void OnEditSL(); void OnEditTP();
 
    EVENT_MAP_BEGIN(CScannerPanel)
+      ON_EVENT(ON_CLICK,    m_tabBtn[0],    OnTab0)
+      ON_EVENT(ON_CLICK,    m_tabBtn[1],    OnTab1)
+      ON_EVENT(ON_CLICK,    m_tabBtn[2],    OnTab2)
+      ON_EVENT(ON_CLICK,    m_tabBtn[3],    OnTab3)
+      ON_EVENT(ON_CLICK,    m_btnReport,    OnReport)
       ON_EVENT(ON_CLICK,    m_btnBuy,       OnBuy)
       ON_EVENT(ON_CLICK,    m_btnSell,      OnSell)
       ON_EVENT(ON_CLICK,    m_btnClose,     OnCloseAll)
       ON_EVENT(ON_CLICK,    m_btnAuto,      OnAuto)
       ON_EVENT(ON_CLICK,    m_btnSize,      OnSize)
       ON_EVENT(ON_CLICK,    m_btnAtrTF,     OnAtrTF)
-      ON_EVENT(ON_CLICK,    m_btnStats,     OnStats)
       ON_EVENT(ON_CLICK,    m_btnAutoOn,    OnAutoOn)
       ON_EVENT(ON_CLICK,    m_btnTrail,     OnTrail)
       ON_EVENT(ON_CLICK,    m_btnCloseAuto, OnCloseAuto)
@@ -1496,6 +1561,7 @@ bool CScannerPanel::Create(const long chart,const string name,const int subwin,
    ApplyDarkChrome();
    if(!BuildControls()) return false;
    ApplyDarkChrome();
+   ApplyTabs();         // v6.95: every tab was built visible - show only the selected one
    return true;
 }
 
@@ -1554,59 +1620,109 @@ bool CScannerPanel::BuildControls()
 
    if(!MkPanel(m_sep2,"sp2", L, 149+DY, W, 1, C_SEP)) return false;
 
-   //--- section 2: overall bias
-   if(!MkPanel(m_band2,"bd2", BX, 154+DY, BW, 17, C_CARD)) return false;
-   if(!MkLabel(m_ovHdr,"oh", L+4, 155+DY, W, "OVERALL MARKET BIAS  (higher timeframes weighted)", C_HEAD)) return false;
+   //--- section 2: filters. v6.95: straight under the table, because they
+   //--- gate those signals, and outside the tabs so no tab can hide a block
+   if(!MkLabel(m_fltHdr,"fh", L,    154+DY, 70,   "FILTERS:", C_HEAD, 8)) return false;
+   if(!MkLabel(m_flt,   "fl", L+62, 154+DY, W-62, "-",        C_TEXT, 8)) return false;
 
-   m_gaugeW = W - 130;                       // v6.51: leaves room for the "71 / 29" readout
-   m_gaugeX = L;
-   if(!MkPanel(m_gTrack,"gt", m_gaugeX-1, 175+DY, m_gaugeW+2, 13, C_TRACK, C_BORDER)) return false;
-   if(!MkPanel(m_gBuy,  "gb", m_gaugeX,              176+DY, m_gaugeW/2, 11, C_BULL)) return false;
-   if(!MkPanel(m_gSell, "gs", m_gaugeX+m_gaugeW/2,   176+DY, m_gaugeW/2, 11, C_BEAR)) return false;
-   if(!MkPanel(m_gMid,  "gm", m_gaugeX+m_gaugeW/2,   173+DY, 1, 17, C_TEXT)) return false;
-   if(!MkLabel(m_gPct,  "gp", m_gaugeX+m_gaugeW+14,  174+DY, 110, "50 / 50", C_TEXT, 8)) return false;
+   //--- section 3: v6.95 THE TABS
+   m_twN=0;
+   const int TY = TabStripY();
+   const int CT = TY + TAB_BTN_H;              // content top
+   const int IL = L + 4;                       // text inside the frame
+   const int IW = W - 8;
+   m_inW = IW;
 
-   if(!MkLabel(m_bias,"bi", L, 190+DY, W, "-", C_TEXT, 9)) return false;
-   //--- v6.5: THE VERDICT CARD. Placed directly under the gauge, because
-   //--- it is the line a person acts on and everything above it is only
-   //--- the evidence behind it. Everything BELOW is pushed down by VY.
-   //--- v6.93: the history strip sits between the verdict card and the
-   //--- filters, so everything below moves down by its height as well
-   const int HB = Hist_BlockH();
-   const int VY = 76 + HB;
-   if(!MkPanel(m_bandV,"bdv", BX, 206+DY, BW, 72, C_CARD, C_BORDER)) return false;
-   if(!MkLabel(m_vHead,"vh",  L+4, 209+DY, W-8, "-", C_TEXT, 10)) return false;
-   if(!MkLabel(m_vLev, "vl",  L+4, 228+DY, W-8, "-", C_DIM,   8)) return false;
-   if(!MkLabel(m_vPros,"vp",  L+4, 244+DY, W-8, "-", C_BULL,  8)) return false;
-   if(!MkLabel(m_vCons,"vc",  L+4, 260+DY, W-8, "-", C_BEAR,  8)) return false;
-
-   //--- v6.93: SIGNAL HISTORY. Under the verdict because it answers the
-   //--- question the verdict raises: has it been saying this for a while?
-   m_hsRows=0;
-   if(HB>0)
+   //--- one size for all four labels: the largest at which every one fits
+   //--- in full on THIS display. Widths then follow the words, so the long
+   //--- name gets the room and no label is clipped or set smaller than its
+   //--- neighbours.
+   const string tabName[TAB_COUNT] = {"MARKET BIAS","SIGNAL HISTORY","EXPOSURE / HEDGE","MY STATS"};
+   int tw[TAB_COUNT];
+   int tfs=9, need=0;
+   while(true)
    {
-      const int hy=282+DY;
-      if(!MkPanel(m_bandHs,"bdhs", BX, hy, BW, 17, C_CARD)) return false;
-      if(!MkLabel(m_hsHdr,"hsh", L+4, hy+1, W, "SIGNAL HISTORY", C_HEAD)) return false;
-      m_hsRows=MathMin(MAX_HIST_ROWS, 2+g_histCfgN);
-      for(int i=0;i<m_hsRows;i++)
-         if(!MkLabel(m_hs[i],"hs"+IntegerToString(i), L, hy+20+i*14, W, "", C_DIM, 8)) return false;
+      need=(TAB_COUNT-1)*TAB_GAP;
+      for(int t=0;t<TAB_COUNT;t++){ tw[t]=TextPxWidth(tabName[t],tfs,"Arial Bold")+16; need+=tw[t]; }
+      if(need<=BW || tfs<=6) break;
+      tfs--;
    }
+   if(need>BW)
+   {
+      //--- a very narrow Panel_W: equal shares, and the labels clip
+      for(int t=0;t<TAB_COUNT;t++) tw[t]=(BW-(TAB_COUNT-1)*TAB_GAP)/TAB_COUNT;
+   }
+   else
+   {
+      //--- share the slack out, so the strip spans the frame exactly
+      const int slack=BW-need;
+      for(int t=0;t<TAB_COUNT;t++) tw[t]+=slack/TAB_COUNT+(t<slack%TAB_COUNT ? 1 : 0);
+   }
+   int tx=BX;
+   for(int t=0;t<TAB_COUNT;t++)
+   {
+      if(!MkButton(m_tabBtn[t],"tab"+IntegerToString(t), tx, TY, tw[t], TAB_BTN_H, tabName[t], C_TABOFF, C_DIM, tfs)) return false;
+      tx+=tw[t]+TAB_GAP;
+   }
+   //--- the frame: panel-dark inside, so everything in it looks as it did
+   //--- when it was a section of its own, and outlined in the colour of the
+   //--- selected tab, so the frame reads as belonging to it
+   if(!MkPanel(m_tabCard,"tcard", BX, CT, BW, TAB_CONTENT_H, C_PANEL, C_TABON)) return false;
 
-   //--- from here down, one offset carries both the extra MTF row and the
-   //--- verdict card, so every coordinate still reads as its original number
-   const int DY2 = DY + VY;
+   //--- tab 0: OVERALL MARKET BIAS. The verdict card lives here because it
+   //--- is the conclusion the gauge is the evidence for.
+   if(!TabLabel(TAB_BIAS,m_ovHdr,"oh", IL, CT+4, IW, "OVERALL MARKET BIAS", C_HEAD)) return false;
+   m_gaugeW = IW - 120;                      // v6.51: leaves room for the "71 / 29" readout
+   m_gaugeX = IL;
+   if(!TabPanel(TAB_BIAS,m_gTrack,"gt", m_gaugeX-1,          CT+22, m_gaugeW+2, 13, C_TRACK, C_BORDER)) return false;
+   if(!TabPanel(TAB_BIAS,m_gBuy,  "gb", m_gaugeX,            CT+23, m_gaugeW/2, 11, C_BULL)) return false;
+   if(!TabPanel(TAB_BIAS,m_gSell, "gs", m_gaugeX+m_gaugeW/2, CT+23, m_gaugeW/2, 11, C_BEAR)) return false;
+   if(!TabPanel(TAB_BIAS,m_gMid,  "gm", m_gaugeX+m_gaugeW/2, CT+20, 1, 17, C_TEXT)) return false;
+   if(!TabLabel(TAB_BIAS,m_gPct,  "gp", m_gaugeX+m_gaugeW+12, CT+21, 106, "50 / 50", C_TEXT)) return false;
+   if(!TabLabel(TAB_BIAS,m_bias,  "bi", IL, CT+38, IW, "-", C_TEXT, 9)) return false;
+   //--- v6.5: THE VERDICT CARD, the line a person acts on
+   m_vW = W - 12;
+   if(!TabPanel(TAB_BIAS,m_bandV,"bdv", L+2, CT+58, W-4, 72, C_CARD, C_BORDER)) return false;
+   if(!TabLabel(TAB_BIAS,m_vHead,"vh",  L+6, CT+61,  m_vW, "-", C_TEXT, 10)) return false;
+   if(!TabLabel(TAB_BIAS,m_vLev, "vl",  L+6, CT+80,  m_vW, "-", C_DIM,   8)) return false;
+   if(!TabLabel(TAB_BIAS,m_vPros,"vp",  L+6, CT+96,  m_vW, "-", C_BULL,  8)) return false;
+   if(!TabLabel(TAB_BIAS,m_vCons,"vc",  L+6, CT+112, m_vW, "-", C_BEAR,  8)) return false;
 
-   if(!MkPanel(m_sep3,"sp3", L, 210+DY2, W, 1, C_SEP)) return false;
+   //--- tab 1: SIGNAL HISTORY (v6.93). At least one row, so a strip that
+   //--- is switched off can say so instead of showing an empty frame.
+   if(!TabLabel(TAB_HIST,m_hsHdr,"hsh", IL, CT+4, IW, "SIGNAL HISTORY", C_HEAD)) return false;
+   m_hsRows=MathMax(1,MathMin(TAB_ROWS,MathMin(MAX_HIST_ROWS,Hist_PanelRows())));
+   for(int i=0;i<m_hsRows;i++)
+      if(!TabLabel(TAB_HIST,m_hs[i],"hs"+IntegerToString(i), IL, CT+20+i*14, IW, "", C_DIM)) return false;
 
-   //--- section 3: filters
-   if(!MkLabel(m_fltHdr,"fh", L,    215+DY2, 70,   "FILTERS:", C_HEAD, 8)) return false;
-   if(!MkLabel(m_flt,   "fl", L+62, 215+DY2, W-62, "-",        C_TEXT, 8)) return false;
-   if(!MkPanel(m_sep4,"sp4", L, 235+DY2, W, 1, C_SEP)) return false;
+   //--- tab 2: EXPOSURE AND HEDGE (v6.8)
+   if(!TabLabel(TAB_HEDGE,m_hHdr, "hh", IL, CT+4,  IW, "EXPOSURE AND HEDGE", C_HEAD)) return false;
+   if(!TabLabel(TAB_HEDGE,m_hExpo,"hx", IL, CT+20, IW, "-", C_TEXT)) return false;
+   for(int i=0;i<MAX_HEDGE_ROWS;i++)
+      if(!TabLabel(TAB_HEDGE,m_hRow[i],"hr"+IntegerToString(i), IL, CT+34+i*14, IW, "", C_DIM)) return false;
+   if(!TabLabel(TAB_HEDGE,m_hNote,"hn", IL, CT+20+(TAB_ROWS-1)*14, IW, "", C_DIM)) return false;
+
+   //--- tab 3: MY STATS. The journal's headlines as a two-column grid, the
+   //--- first finding under it, and a button for the full report.
+   m_repW = MathMin(IW/3, TextPxWidth("FULL REPORT",8,"Arial Bold")+18);
+   if(!TabLabel(TAB_STATS,m_sHdr,"sth", IL, CT+4, IW-m_repW-8, "MY STATS", C_HEAD)) return false;
+   if(!MkButton(m_btnReport,"brep", IL+IW-m_repW, CT+2, m_repW, 18, "FULL REPORT", C'70,52,96', C_TEXT, 8)) return false;
+   TabReg(TAB_STATS,m_btnReport);
+   m_colW = (IW-12)/2;
+   for(int k=0;k<TRADER_TAB_ROWS;k++)
+   {
+      if(!TabLabel(TAB_STATS,m_sL[k],"sl"+IntegerToString(k), IL,           CT+20+k*14, m_colW, "", C_DIM)) return false;
+      if(!TabLabel(TAB_STATS,m_sR[k],"sr"+IntegerToString(k), IL+m_colW+12, CT+20+k*14, m_colW, "", C_DIM)) return false;
+   }
+   if(!TabLabel(TAB_STATS,m_sFind,"sf", IL, CT+20+TRADER_TAB_ROWS*14, IW, "", C_DIM)) return false;
+
+   //--- from here down one offset carries the ticket to just under the
+   //--- frame, so every coordinate below still reads as its original number
+   const int DY2 = PanelTicketDY();
 
    //--- section 4: trade ticket
    if(!MkPanel(m_band3,"bd3", BX, 240+DY2, BW, 17, C_CARD)) return false;
-   if(!MkLabel(m_tkHdr,"th", L+4, 241+DY2, W, "TRADE TICKET  (manual - click to place)", C_HEAD)) return false;
+   if(!MkLabel(m_tkHdr,"th", L+4, 241+DY2, W, "TRADE TICKET", C_HEAD)) return false;
 
    //--- row 1: lot | risk | cap note
    if(!MkLabel(m_lbLot, "llot", L,    264+DY2, LBW, "Lot:",   C_TEXT, 8)) return false;
@@ -1622,11 +1738,11 @@ bool CScannerPanel::BuildControls()
    if(!MkEdit (m_edTP,"etp", EDX2, 286+DY2, EDW, DoubleToString(g_ui_tpPts,0))) return false;
    if(!MkButton(m_btnAtrTF,"batf", C3, 286+DY2, BTW3, 18, "ATR: CHART", C'52,58,76', C_TEXT, 8)) return false;
 
-   //--- toggles
-   if(!MkButton(m_btnAuto,"bauto", L,  310+DY2, BTW, 20, "SL/TP: AUTO", C'40,86,58', C_TEXT, 8)) return false;
-   if(!MkButton(m_btnSize,"bsize", C2, 310+DY2, BTW, 20, "SIZE: RISK%", C'44,62,96', C_TEXT, 8)) return false;
-   //--- v6.6: the third column on this row was empty
-   if(!MkButton(m_btnStats,"bstat", C3, 310+DY2, BTW3, 20, "MY STATS", C'70,52,96', C_TEXT, 8)) return false;
+   //--- toggles. v6.95: MY STATS became a tab, so the two toggles split the
+   //--- row and get the room their "-> what a click does" text needs
+   m_btn2W = (W-GAP)/2;
+   if(!MkButton(m_btnAuto,"bauto", L,             310+DY2, m_btn2W, 20, "SL/TP: AUTO", C'40,86,58', C_TEXT, 8)) return false;
+   if(!MkButton(m_btnSize,"bsize", L+m_btn2W+GAP, 310+DY2, m_btn2W, 20, "SIZE: RISK%", C'44,62,96', C_TEXT, 8)) return false;
 
    if(!MkLabel(m_est,"est", L, 334+DY2, W, "-", C_TEXT, 8)) return false;
 
@@ -1654,10 +1770,8 @@ bool CScannerPanel::BuildControls()
    //--- depends on how many symbols you asked for. Rows are created only
    //--- as far as the client area actually reaches, so a Panel_H that is
    //--- too short trims the list instead of drawing off the bottom edge.
-   //--- v6.7 / v6.8: the two variable-height sections. A running cursor,
-   //--- because each one's height depends on how much you asked for, and
-   //--- a section is created only as far as the client area actually
-   //--- reaches rather than drawing off the bottom edge.
+   //--- v6.95: the hedge block that followed it is a tab now, so this is
+   //--- the only section left whose height varies.
    int y = 506+DY2;
 
    m_wlRows=0;
@@ -1678,25 +1792,6 @@ bool CScannerPanel::BuildControls()
       else Print("WATCHLIST: no room to draw - raise Panel_H");
    }
 
-   m_hRows=0;
-   if(Hedge_Enabled())
-   {
-      const int rowTop=y+20;
-      const int fits=MathMax(0,MathMin(1+MAX_HEDGE_ROWS,
-                     (ClientAreaHeight()-rowTop-2)/14));
-      if(fits>=1)
-      {
-         if(!MkPanel(m_bandH,"bdh", BX, y, BW, 17, C_CARD)) return false;
-         if(!MkLabel(m_hHdr,"hh", L+4, y+1, W, "EXPOSURE AND HEDGE", C_HEAD)) return false;
-         if(!MkLabel(m_hExpo,"hx", L, rowTop, W, "-", C_TEXT, 8)) return false;
-         m_hRows=MathMin(MAX_HEDGE_ROWS,fits-1);
-         for(int i=0;i<m_hRows;i++)
-            if(!MkLabel(m_hRow[i],"hr"+IntegerToString(i), L, rowTop+14+i*14, W, "", C_DIM, 8)) return false;
-         y = rowTop + 14 + m_hRows*14;
-      }
-      else Print("HEDGE: no room to draw - raise Panel_H");
-   }
-
    return true;
 }
 
@@ -1708,7 +1803,6 @@ void CScannerPanel::Refresh()
    Paint("sub", C_TEXT, 8);
    Paint("mh",  C_HEAD, 9);
    Paint("col", C_DIM,  8);
-   Paint("oh",  C_HEAD, 9);
    Paint("fh",  C_HEAD, 8);
    Paint("th",  C_HEAD, 9);
    Paint("ah",  C_HEAD, 9);
@@ -1762,49 +1856,24 @@ void CScannerPanel::Refresh()
       Paint("tf"+IntegerToString(i), g_R[i].ready ? DirColor(g_R[i].dir) : C_DIM, rowFS);
    }
 
-   //--- gauge
-   int buyW = (int)MathRound(m_gaugeW * g_overallBuyPct/100.0);
-   buyW = MathMax(1, MathMin(m_gaugeW-1, buyW));
-   m_gBuy.Size(buyW, 11);
-   m_gSell.Move(m_gBuy.Left()+buyW, m_gSell.Top());
-   m_gSell.Size(m_gaugeW-buyW, 11);
-   m_gPct.Text(StringFormat("%.0f / %.0f", g_overallBuyPct, 100-g_overallBuyPct));
-
-   string curNote; const int ci=CurrentTFIndex();
-   if(ci>=0 && g_R[ci].ready)
+   //--- v6.95: only the tab on show is drawn. SetTab draws a tab before it
+   //--- shows it, so switching never flashes text from an earlier second.
+   switch(g_uiTab)
    {
-      const bool agree=(g_R[ci].dir>0&&g_overallDir>0)||(g_R[ci].dir<0&&g_overallDir<0)||(g_R[ci].dir==0&&g_overallDir==0);
-      curNote=StringFormat("| %s %s", g_tfName[ci], agree?"AGREES":"DIVERGES");
+      case TAB_HIST:  RefreshHist();  break;
+      case TAB_HEDGE: RefreshHedge(); break;
+      case TAB_STATS: RefreshStats(); break;
+      default:        RefreshBias();  break;
    }
-   else curNote="| chart TF not scanned";
 
-   FitLabel(m_bias,"bi",StringFormat("%s %s  BUY %.0f%% / SELL %.0f%%  align %d▲ %d● %d▼ %s",
-            g_overallDir>0?"▲":g_overallDir<0?"▼":"●", g_overallLabel,
-            g_overallBuyPct, 100-g_overallBuyPct, g_up, g_nt, g_dn, curNote),
-            DirColor(g_overallDir), 9, m_lblW);
-
-   //--- v6.5: the verdict card. The headline takes the direction's colour
-   //--- when there is a trade and the warning colour when there is not, so
-   //--- "no" is as visible as "yes".
-   const int vW = m_lblW - 8;
-   FitLabel(m_vHead,"vh", g_V.head, (g_V.dir>0 ? C_BULL : g_V.dir<0 ? C_BEAR : C_WARN), 10, vW);
-   FitLabel(m_vLev, "vl", g_V.levels, C_TEXT, 8, vW);
-   FitLabel(m_vPros,"vp", StringLen(g_V.pros)>0 ? "FOR      "+g_V.pros : "", C_BULL, 8, vW);
-   FitLabel(m_vCons,"vc", StringLen(g_V.cons)>0 ? "AGAINST  "+g_V.cons : "AGAINST  nothing",
-            StringLen(g_V.cons)>0 ? C_BEAR : C_DIM, 8, vW);
-
-   //--- v6.93: signal history
-   if(m_hsRows>0)
-   {
-      FitLabel(m_hsHdr,"hsh","SIGNAL HISTORY  (same ensemble on closed bars, and the move since)",
-               C_HEAD, 9, m_lblW);
-      for(int i=0;i<m_hsRows;i++)
-      {
-         string txt=""; color c=C_DIM;
-         Hist_RowText(i,txt,c);
-         FitLabel(m_hs[i],"hs"+IntegerToString(i),txt,c,8,m_lblW);
-      }
-   }
+   //--- v6.95: the verdict card sits in the first tab, so the call itself
+   //--- rides on the ticket header too - the line you read before you
+   //--- click, whichever tab is up
+   FitLabel(m_tkHdr,"th",
+            g_V.dir>0 ? StringFormat("TRADE TICKET   panel says ▲ BUY   grade %s   %d/%d",g_V.grade,g_V.pass,g_V.total)
+          : g_V.dir<0 ? StringFormat("TRADE TICKET   panel says ▼ SELL   grade %s   %d/%d",g_V.grade,g_V.pass,g_V.total)
+          :             "TRADE TICKET   panel says WAIT",
+            C_HEAD, 9, m_lblW);
 
    FitLabel(m_flt,"fl",StringFormat("Session: %s   |   News: %s   |   Vol: %s", g_sessionMsg, g_newsMsg, g_volMsg),
             (g_sessionBlock||g_newsBlock)?C_WARN:C_TEXT, 8, m_lblW-62);
@@ -1824,9 +1893,9 @@ void CScannerPanel::Refresh()
    //--- "SL/TP: AUTO" alone was ambiguous — it could be read as the state
    //--- the button is in or as the state it would put you in, and those are
    //--- opposites. Upper case is what IS, lower case is what a click makes.
-   FitButton(m_btnAuto,"bauto", g_ui_auto ? "SL/TP: AUTO -> manual" : "SL/TP: MANUAL -> auto", 8, m_btnW);
+   FitButton(m_btnAuto,"bauto", g_ui_auto ? "SL/TP: AUTO -> manual" : "SL/TP: MANUAL -> auto", 8, m_btn2W);
    m_btnAuto.ColorBackground(g_ui_auto?C'40,86,58':C'96,76,34');
-   FitButton(m_btnSize,"bsize", g_ui_riskMode ? "SIZE: RISK% -> lot" : "SIZE: LOT -> risk%", 8, m_btnW);
+   FitButton(m_btnSize,"bsize", g_ui_riskMode ? "SIZE: RISK% -> lot" : "SIZE: LOT -> risk%", 8, m_btn2W);
    //--- the ATR source cycles CHART -> M1 -> ... -> D1 -> CHART
    int nextAtr = g_ui_atrTF + 1; if(nextAtr >= TF_COUNT) nextAtr = -1;
    FitButton(m_btnAtrTF,"batf", StringFormat("ATR: %s -> %s",
@@ -1900,17 +1969,8 @@ void CScannerPanel::Refresh()
       }
    }
 
-   //--- v6.8: exposure and hedge
-   if(m_hRows>0 || Hedge_Enabled())
-   {
-      Paint("hh", C_HEAD, 9);
-      m_hHdr.Text(StringFormat("EXPOSURE AND HEDGE  (correlation over %d %s bars)",
-                  g_corrPairs, g_tfName[ResolveTFIdx(InpCorrTF)]));
-      FitLabel(m_hExpo,"hx", g_expoLine, C_TEXT, 8, m_lblW);
-      for(int i=0;i<m_hRows;i++)
-         FitLabel(m_hRow[i],"hr"+IntegerToString(i),
-                  (i<g_hedgeN ? g_hedgeRow[i] : ""), C_DIM, 8, m_lblW);
-   }
+   //--- v6.95: last, so it also undoes anything the dialog library re-showed
+   ApplyTabs();
 }
 
 //--- event handlers ----------------------------------------------------
@@ -1957,9 +2017,195 @@ void CScannerPanel::OnTrail()
 }
 void CScannerPanel::OnCloseAuto(){ CloseAuto("Panel CLOSE AUTO"); Refresh(); }
 
-//--- v6.6: read the trader journal back and say what it found. The full
-//--- text lands in a file; the headline groups go to the Experts log.
-void CScannerPanel::OnStats(){ Trader_Report(); Refresh(); }
+//--- v6.95: MY STATS is a tab now; the button left inside it writes the
+//--- full report (every split, by hour and by weekday) to a file.
+void CScannerPanel::OnReport()
+{
+   //--- CWnd::OnMouseEvent hit-tests by position and never asks whether a
+   //--- control is visible, so this button still "clicks" while its tab is
+   //--- hidden - on whatever caption covers the same spot. Refuse then.
+   if(g_uiTab!=TAB_STATS) return;
+   Trader_Report();
+   Refresh();
+}
+
+void CScannerPanel::OnTab0(){ SetTab(TAB_BIAS);  }
+void CScannerPanel::OnTab1(){ SetTab(TAB_HIST);  }
+void CScannerPanel::OnTab2(){ SetTab(TAB_HEDGE); }
+void CScannerPanel::OnTab3(){ SetTab(TAB_STATS); }
+
+//+------------------------------------------------------------------+
+//| v6.95: tabs                                                       |
+//+------------------------------------------------------------------+
+void CScannerPanel::TabReg(const int t,CWnd &w)
+{
+   if(m_twN>=TAB_MAX_CTL){ Print("PANEL: TAB_MAX_CTL is too small - a tab control will not hide"); return; }
+   m_tw[m_twN]=GetPointer(w);
+   m_twTab[m_twN]=t;
+   m_twN++;
+}
+
+bool CScannerPanel::TabLabel(const int t,CLabel &l,string id,int x,int y,int w,string txt,color c,int fs)
+{
+   if(!MkLabel(l,id,x,y,w,txt,c,fs)) return false;
+   TabReg(t,l);
+   return true;
+}
+
+bool CScannerPanel::TabPanel(const int t,CPanel &p,string id,int x,int y,int w,int h,color bg,color bd)
+{
+   if(!MkPanel(p,id,x,y,w,h,bg,bd)) return false;
+   TabReg(t,p);
+   return true;
+}
+
+//--- the selected tab in the accent colour with white text, the others
+//--- dark with dim text; then show that tab's controls and hide the rest.
+//--- Cheap enough to run every second, which is what makes it self-healing.
+void CScannerPanel::ApplyTabs()
+{
+   for(int t=0;t<TAB_COUNT;t++)
+   {
+      const bool on=(t==g_uiTab);
+      m_tabBtn[t].ColorBackground(on ? C_TABON : C_TABOFF);
+      m_tabBtn[t].ColorBorder(on ? C_TABON : C_SEP);
+      Paint("tab"+IntegerToString(t), on ? clrWhite : C_DIM);
+   }
+   //--- a minimised dialog shows nothing at all; Maximize re-applies this
+   if(m_minimized) return;
+   for(int k=0;k<m_twN;k++)
+   {
+      CWnd *w=m_tw[k];
+      if(CheckPointer(w)==POINTER_INVALID) continue;
+      const bool want=(m_twTab[k]==g_uiTab);
+      if(want && !w.IsVisible())      w.Show();
+      else if(!want && w.IsVisible()) w.Hide();
+   }
+}
+
+void CScannerPanel::SetTab(const int t)
+{
+   if(t<0 || t>=TAB_COUNT) return;
+   g_uiTab=t;
+   if(t==TAB_STATS) g_tsDirty=true;     // opening the tab shows the file as it is now
+   Refresh();                           // draws the tab, THEN ApplyTabs shows it
+   ChartRedraw();
+}
+
+//--- CAppDialog::Maximize shows every child of the client area - the
+//--- library's containers have no notion of tabs - so restoring a
+//--- minimised panel would stack all four tabs on top of each other.
+void CScannerPanel::Maximize(void)
+{
+   CAppDialog::Maximize();
+   ApplyTabs();
+}
+
+//--- tab 0: the gauge, the reading, the verdict card
+void CScannerPanel::RefreshBias()
+{
+   FitLabel(m_ovHdr,"oh","OVERALL MARKET BIAS  (higher timeframes weighted)",C_HEAD,8,m_inW);
+
+   int buyW = (int)MathRound(m_gaugeW * g_overallBuyPct/100.0);
+   buyW = MathMax(1, MathMin(m_gaugeW-1, buyW));
+   m_gBuy.Size(buyW, 11);
+   m_gSell.Move(m_gBuy.Left()+buyW, m_gSell.Top());
+   m_gSell.Size(m_gaugeW-buyW, 11);
+   m_gPct.Text(StringFormat("%.0f / %.0f", g_overallBuyPct, 100-g_overallBuyPct));
+
+   string curNote; const int ci=CurrentTFIndex();
+   if(ci>=0 && g_R[ci].ready)
+   {
+      const bool agree=(g_R[ci].dir>0&&g_overallDir>0)||(g_R[ci].dir<0&&g_overallDir<0)||(g_R[ci].dir==0&&g_overallDir==0);
+      curNote=StringFormat("| %s %s", g_tfName[ci], agree?"AGREES":"DIVERGES");
+   }
+   else curNote="| chart TF not scanned";
+
+   FitLabel(m_bias,"bi",StringFormat("%s %s  BUY %.0f%% / SELL %.0f%%  align %d▲ %d● %d▼ %s",
+            g_overallDir>0?"▲":g_overallDir<0?"▼":"●", g_overallLabel,
+            g_overallBuyPct, 100-g_overallBuyPct, g_up, g_nt, g_dn, curNote),
+            DirColor(g_overallDir), 9, m_inW);
+
+   //--- v6.5: the verdict card. The headline takes the direction's colour
+   //--- when there is a trade and the warning colour when there is not, so
+   //--- "no" is as visible as "yes".
+   FitLabel(m_vHead,"vh", g_V.head, (g_V.dir>0 ? C_BULL : g_V.dir<0 ? C_BEAR : C_WARN), 10, m_vW);
+   FitLabel(m_vLev, "vl", g_V.levels, C_TEXT, 8, m_vW);
+   FitLabel(m_vPros,"vp", StringLen(g_V.pros)>0 ? "FOR      "+g_V.pros : "", C_BULL, 8, m_vW);
+   FitLabel(m_vCons,"vc", StringLen(g_V.cons)>0 ? "AGAINST  "+g_V.cons : "AGAINST  nothing",
+            StringLen(g_V.cons)>0 ? C_BEAR : C_DIM, 8, m_vW);
+}
+
+//--- tab 1: the ensemble at past moments (v6.93)
+void CScannerPanel::RefreshHist()
+{
+   if(Hist_PanelRows()==0)
+   {
+      FitLabel(m_hsHdr,"hsh","SIGNAL HISTORY  (switched off)",C_HEAD,8,m_inW);
+      FitLabel(m_hs[0],"hs0","Set InpShowHistory=true and list minutes in InpHistLookbacks to use this tab.",C_DIM,8,m_inW);
+      return;
+   }
+   FitLabel(m_hsHdr,"hsh","SIGNAL HISTORY  (same ensemble on closed bars, and the move since)",C_HEAD,8,m_inW);
+   for(int i=0;i<m_hsRows;i++)
+   {
+      string txt=""; color c=C_DIM;
+      Hist_RowText(i,txt,c);
+      FitLabel(m_hs[i],"hs"+IntegerToString(i),txt,c,8,m_inW);
+   }
+}
+
+//--- tab 2: net exposure and offsets (v6.8)
+void CScannerPanel::RefreshHedge()
+{
+   if(!Hedge_Enabled())
+   {
+      FitLabel(m_hHdr,"hh","EXPOSURE AND HEDGE  (switched off)",C_HEAD,8,m_inW);
+      FitLabel(m_hExpo,"hx","Set InpShowHedge=true to net your currency exposure and size offsets.",C_DIM,8,m_inW);
+      for(int i=0;i<MAX_HEDGE_ROWS;i++) FitLabel(m_hRow[i],"hr"+IntegerToString(i),"",C_DIM,8,m_inW);
+      FitLabel(m_hNote,"hn","",C_DIM,8,m_inW);
+      return;
+   }
+   FitLabel(m_hHdr,"hh",StringFormat("EXPOSURE AND HEDGE  (correlation over %d %s bars)",
+            g_corrPairs, g_tfName[ResolveTFIdx(InpCorrTF)]), C_HEAD, 8, m_inW);
+   FitLabel(m_hExpo,"hx", g_expoLine, C_TEXT, 8, m_inW);
+   for(int i=0;i<MAX_HEDGE_ROWS;i++)
+      FitLabel(m_hRow[i],"hr"+IntegerToString(i), (i<g_hedgeN ? g_hedgeRow[i] : ""), C_DIM, 8, m_inW);
+   //--- the caveat AB_Hedge is built around, printed where the numbers are read
+   FitLabel(m_hNote,"hn","Offsets swap direction risk for correlation risk. Correlations fail in a crisis.",
+            C_DIM, 8, m_inW);
+}
+
+//--- tab 3: your own journal, read back (v6.6)
+void CScannerPanel::RefreshStats()
+{
+   Trader_StatsRefresh();               // re-reads the file only after a trade closes, or once a minute
+   string cap="",fnd=""; color fc=C_DIM;
+   string lt[TRADER_TAB_ROWS],rt[TRADER_TAB_ROWS];
+   color  lc[TRADER_TAB_ROWS],rc[TRADER_TAB_ROWS];
+   Trader_TabText(cap,lt,lc,rt,rc,fnd,fc);
+
+   FitLabel(m_sHdr,"sth",cap,C_HEAD,8,m_inW-m_repW-8);
+   FitButton(m_btnReport,"brep","FULL REPORT",8,m_repW);
+
+   //--- the grid is sized as ONE table, like the timeframe rows: every cell
+   //--- at the same size, so the two columns stay aligned
+   int fs=8;
+   while(fs>6)
+   {
+      int wmax=0;
+      for(int k=0;k<TRADER_TAB_ROWS;k++)
+         wmax=MathMax(wmax,MathMax(TextPxWidth(lt[k],fs),TextPxWidth(rt[k],fs)));
+      if(wmax<=m_colW) break;
+      fs--;
+   }
+   //--- FitLabel keeps the ".." rule for any cell that still does not fit at 6pt
+   for(int k=0;k<TRADER_TAB_ROWS;k++)
+   {
+      FitLabel(m_sL[k],"sl"+IntegerToString(k),lt[k],lc[k],fs,m_colW);
+      FitLabel(m_sR[k],"sr"+IntegerToString(k),rt[k],rc[k],fs,m_colW);
+   }
+   FitLabel(m_sFind,"sf",fnd,fc,8,m_inW);
+}
 
 void CScannerPanel::OnEditLot()
 {
@@ -2130,14 +2376,14 @@ int OnInit()
    //--- setting is honoured and a shorter one is simply raised.
    int panelH = Panel_H;
    {
-      int y = 506 + (TF_COUNT-6)*14 + 76 + Hist_BlockH();
+      //--- v6.95: the same offset BuildControls lays the ticket out with
+      int y = 506 + PanelTicketDY();
       if(Watch_Count()>0)  y += 20 + Watch_Count()*14;
-      if(Hedge_Enabled())  y += 20 + (1+MAX_HEDGE_ROWS)*14;
       const int needed = y + 2 + 24;
       if(needed>panelH)
       {
-         PrintFormat("PANEL: height raised from %d to %d to fit %d watchlist row(s)%s",
-                     panelH,needed,Watch_Count(),(Hedge_Enabled()?" and the hedge block":""));
+         PrintFormat("PANEL: height raised from %d to %d so every section fits%s",
+                     panelH,needed,(Watch_Count()>0 ? StringFormat(" (%d watchlist rows)",Watch_Count()) : ""));
          panelH=needed;
       }
    }

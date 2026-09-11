@@ -42,7 +42,7 @@
 //| worst the trade ever showed (MFE and MAE, also in R), how long it |
 //| was held, and how it ended - your hand, a stop, or a target.      |
 //|                                                                  |
-//| WHAT IT IS FOR. The MY STATS button reads the file back and       |
+//| WHAT IT IS FOR. The MY STATS tab reads the file back and          |
 //| answers the questions a trading journal is supposed to answer and |
 //| almost never does: does overriding the signal make or lose money, |
 //| do the A-grade setups actually outperform the C-grade ones, what  |
@@ -105,6 +105,12 @@ int      g_trLossStreak  = 0;
 double   g_trBalance     = 0;      // balance as of the previous event
 int      g_trTradesToday = 0;
 datetime g_trDayStamp    = 0;
+
+//--- v6.95: the MY STATS tab keeps its last scan. Declared up here because
+//--- Trader_Init and Trader_OnDealOut mark it stale.
+bool     g_tsHave  = false;        // g_ts holds a scan that succeeded
+bool     g_tsDirty = true;         // one of your trades closed since: re-read before showing
+datetime g_tsAt    = 0;            // local time of the last scan
 
 bool Trader_Enabled()
 {
@@ -179,6 +185,7 @@ void Trader_Init()
 {
    ArrayResize(g_mt,0);
    g_trOK=false;
+   g_tsHave=false; g_tsDirty=true;    // v6.95: a new file, or the same one after a restart
    g_trBalance=AccountInfoDouble(ACCOUNT_BALANCE);
    g_trDayStamp=0;
    Trader_RollDay();
@@ -457,6 +464,7 @@ void Trader_OnDealOut(const ulong deal)
                                  TimeToString(g_mt[k].openTime,TIME_DATE|TIME_SECONDS),
                                  "");
    Trader_Write(row);
+   g_tsDirty=true;                    // v6.95: the MY STATS tab re-reads on its next pass
 
    //--- streak state for the revenge flag on the NEXT trade
    g_trBalance   =balNow;
@@ -482,6 +490,11 @@ void Trader_OnDealOut(const ulong deal)
 //| to answer. Every split states its sample size, and anything under |
 //| InpReportMinN is marked as too thin to read rather than quietly   |
 //| presented as a finding.                                           |
+//|                                                                  |
+//| v6.95: reading is split from writing. Trader_Scan fills one       |
+//| TraderStats; the text report and the panel's MY STATS tab both    |
+//| render from it, and the findings come from one function, so the   |
+//| tab and the report cannot disagree about a number or a verdict.   |
 //+------------------------------------------------------------------+
 struct RGroup
 {
@@ -500,32 +513,40 @@ string RG_Line(const RGroup &g)
                        g.name,g.n,(double)g.wins/g.n*100.0,g.sumR/g.n,g.sumR,g.sumMoney,thin);
 }
 
-void Trader_Report()
+struct TraderStats
 {
-   if(!g_trOK){ Print("TRADER JOURNAL: no file to report on"); return; }
-
-   const int h=FileOpen(g_trFile,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_COMMON);
-   if(h==INVALID_HANDLE){ PrintFormat("TRADER JOURNAL: cannot read %s (error %d)",g_trFile,GetLastError()); return; }
-
    RGroup all,withS,against,noSig,gA,gB,gC,gNone,noStop,hasStop,over,sized,revY,revN,newsY,sessY;
-   RG_Init(all,"ALL EXITS");            RG_Init(withS,"WITH the signal");
-   RG_Init(against,"AGAINST the signal");RG_Init(noSig,"no signal (panel said wait)");
-   RG_Init(gA,"grade A");               RG_Init(gB,"grade B");
-   RG_Init(gC,"grade C");               RG_Init(gNone,"no grade");
-   RG_Init(noStop,"NO stop loss");      RG_Init(hasStop,"with a stop");
-   RG_Init(over,"oversized");           RG_Init(sized,"within your risk%");
-   RG_Init(revY,"revenge trades");      RG_Init(revN,"not revenge");
-   RG_Init(newsY,"during news");        RG_Init(sessY,"during session block");
-
    RGroup byHour[24], byDow[7];
-   for(int i=0;i<24;i++) RG_Init(byHour[i],StringFormat("h%02d",i));
-   for(int i=0;i<7;i++)  RG_Init(byDow[i], StringFormat("dow%d",i));
+   double gaveBack; int gaveN;
+   long   winSecs,lossSecs; int winN,lossN;
+   double firstBal,lastBal;
+};
 
-   double gaveBack=0; int gaveN=0;
-   long   winSecs=0,lossSecs=0; int winN=0,lossN=0;
-   double firstBal=0,lastBal=0; bool haveFirst=false;
+TraderStats g_ts;                  // v6.95: the last scan, for the MY STATS tab
 
-   int lineNo=0;
+//--- read the whole file into st. false when there is no file to read.
+bool Trader_Scan(TraderStats &st)
+{
+   RG_Init(st.all,"ALL EXITS");             RG_Init(st.withS,"WITH the signal");
+   RG_Init(st.against,"AGAINST the signal");RG_Init(st.noSig,"no signal (panel said wait)");
+   RG_Init(st.gA,"grade A");                RG_Init(st.gB,"grade B");
+   RG_Init(st.gC,"grade C");                RG_Init(st.gNone,"no grade");
+   RG_Init(st.noStop,"NO stop loss");       RG_Init(st.hasStop,"with a stop");
+   RG_Init(st.over,"oversized");            RG_Init(st.sized,"within your risk%");
+   RG_Init(st.revY,"revenge trades");       RG_Init(st.revN,"not revenge");
+   RG_Init(st.newsY,"during news");         RG_Init(st.sessY,"during session block");
+   for(int i=0;i<24;i++) RG_Init(st.byHour[i],StringFormat("h%02d",i));
+   for(int i=0;i<7;i++)  RG_Init(st.byDow[i], StringFormat("dow%d",i));
+   st.gaveBack=0; st.gaveN=0;
+   st.winSecs=0; st.lossSecs=0; st.winN=0; st.lossN=0;
+   st.firstBal=0; st.lastBal=0;
+
+   if(!g_trOK) return false;
+   const int h=FileOpen(g_trFile,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE){ PrintFormat("TRADER JOURNAL: cannot read %s (error %d)",g_trFile,GetLastError()); return false; }
+
+   bool haveFirst=false;
+   int  lineNo=0;
    while(!FileIsEnding(h))
    {
       const string line=FileReadString(h);
@@ -535,8 +556,8 @@ void Trader_Report()
       if(nf<AB_TRADER_COLS) continue;
 
       const double balA=StringToDouble(f[44]);
-      if(!haveFirst && balA>0){ firstBal=StringToDouble(f[43]); haveFirst=true; }
-      if(balA>0) lastBal=balA;
+      if(!haveFirst && balA>0){ st.firstBal=StringToDouble(f[43]); haveFirst=true; }
+      if(balA>0) st.lastBal=balA;
 
       if(f[1]!="EXIT") continue;
 
@@ -554,31 +575,82 @@ void Trader_Report()
       const int    sBlk  =(int)StringToInteger(f[32]);
       const int    nBlk  =(int)StringToInteger(f[33]);
 
-      RG_Add(all,r,money);
-      if(align=="WITH")           RG_Add(withS,r,money);
-      else if(align=="AGAINST")   RG_Add(against,r,money);
-      else if(align=="NO_SIGNAL") RG_Add(noSig,r,money);
+      RG_Add(st.all,r,money);
+      if(align=="WITH")           RG_Add(st.withS,r,money);
+      else if(align=="AGAINST")   RG_Add(st.against,r,money);
+      else if(align=="NO_SIGNAL") RG_Add(st.noSig,r,money);
 
-      if(grade=="A")      RG_Add(gA,r,money);
-      else if(grade=="B") RG_Add(gB,r,money);
-      else if(grade=="C") RG_Add(gC,r,money);
-      else                RG_Add(gNone,r,money);
+      if(grade=="A")      RG_Add(st.gA,r,money);
+      else if(grade=="B") RG_Add(st.gB,r,money);
+      else if(grade=="C") RG_Add(st.gC,r,money);
+      else                RG_Add(st.gNone,r,money);
 
-      if(hasSL==1) RG_Add(hasStop,r,money); else RG_Add(noStop,r,money);
-      if(ratio>InpOversizeRatio) RG_Add(over,r,money); else RG_Add(sized,r,money);
-      if(rev==1) RG_Add(revY,r,money); else RG_Add(revN,r,money);
-      if(nBlk==1) RG_Add(newsY,r,money);
-      if(sBlk==1) RG_Add(sessY,r,money);
+      if(hasSL==1) RG_Add(st.hasStop,r,money); else RG_Add(st.noStop,r,money);
+      if(ratio>InpOversizeRatio) RG_Add(st.over,r,money); else RG_Add(st.sized,r,money);
+      if(rev==1) RG_Add(st.revY,r,money); else RG_Add(st.revN,r,money);
+      if(nBlk==1) RG_Add(st.newsY,r,money);
+      if(sBlk==1) RG_Add(st.sessY,r,money);
 
-      if(hour>=0&&hour<24) RG_Add(byHour[hour],r,money);
-      if(dow >=0&&dow <7)  RG_Add(byDow[dow],  r,money);
+      if(hour>=0&&hour<24) RG_Add(st.byHour[hour],r,money);
+      if(dow >=0&&dow <7)  RG_Add(st.byDow[dow],  r,money);
 
-      if(money>0){ winSecs+=secs; winN++; if(mfeR>r){ gaveBack+=(mfeR-r); gaveN++; } }
-      else       { lossSecs+=secs; lossN++; }
+      if(money>0){ st.winSecs+=secs; st.winN++; if(mfeR>r){ st.gaveBack+=(mfeR-r); st.gaveN++; } }
+      else       { st.lossSecs+=secs; st.lossN++; }
    }
    FileClose(h);
+   return true;
+}
 
-   if(all.n==0){ Print("TRADER JOURNAL: no closed trades recorded yet"); return; }
+//--- the findings, as one list both renderers share: lng in the report's
+//--- words, shr as a one-line version for the tab, good when it is praise
+void TR_Push(string &lng[],string &shr[],bool &good[],const string l,const string s,const bool g)
+{
+   const int n=ArraySize(lng);
+   ArrayResize(lng,n+1); ArrayResize(shr,n+1); ArrayResize(good,n+1);
+   lng[n]=l; shr[n]=s; good[n]=g;
+}
+
+int Trader_Findings(const TraderStats &st,string &lng[],string &shr[],bool &good[])
+{
+   ArrayResize(lng,0); ArrayResize(shr,0); ArrayResize(good,0);
+   if(st.noStop.n>=InpReportMinN && st.noStop.sumMoney<0)
+      TR_Push(lng,shr,good,
+              StringFormat("Trading without a stop has cost you %.2f over %d trades.",-st.noStop.sumMoney,st.noStop.n),
+              StringFormat("Trading without a stop has cost you %.2f over %d trades",-st.noStop.sumMoney,st.noStop.n),false);
+   if(st.against.n>=InpReportMinN && st.withS.n>=InpReportMinN)
+   {
+      const double a=st.against.sumR/st.against.n, w=st.withS.sumR/st.withS.n;
+      if(a<w)
+         TR_Push(lng,shr,good,
+                 StringFormat("Overriding the panel is costing you: %+.2fR per trade against\r\n    it versus %+.2fR with it.",a,w),
+                 StringFormat("Overriding the panel costs you: %+.2fR vs %+.2fR with it",a,w),false);
+      else
+         TR_Push(lng,shr,good,
+                 StringFormat("You beat the panel when you override it: %+.2fR against versus\r\n    %+.2fR with. The ensemble may be too strict for you.",a,w),
+                 StringFormat("You beat the panel when you override it: %+.2fR vs %+.2fR",a,w),true);
+   }
+   if(st.over.n>=InpReportMinN && st.over.sumR/st.over.n < st.sized.sumR/MathMax(1,st.sized.n))
+   {
+      const double o=st.over.sumR/st.over.n, z=st.sized.sumR/MathMax(1,st.sized.n);
+      TR_Push(lng,shr,good,
+              StringFormat("Oversized trades do worse: %+.2fR versus %+.2fR when you stay\r\n    inside your own risk setting.",o,z),
+              StringFormat("Oversized trades do worse: %+.2fR vs %+.2fR inside your risk%%",o,z),false);
+   }
+   if(st.revY.n>=InpReportMinN && st.revY.sumR<0)
+      TR_Push(lng,shr,good,
+              StringFormat("The %d trades you opened within %d minutes of a loss total %+.2fR.",st.revY.n,InpRevengeMinutes,st.revY.sumR),
+              StringFormat("%d trades opened within %d min of a loss: %+.2fR total",st.revY.n,InpRevengeMinutes,st.revY.sumR),false);
+   return ArraySize(lng);
+}
+
+void Trader_Report()
+{
+   if(!g_trOK){ Print("TRADER JOURNAL: no file to report on"); return; }
+   //--- straight into the tab's copy, so the tab shows what the report says
+   g_tsHave=Trader_Scan(g_ts);
+   g_tsDirty=false; g_tsAt=TimeLocal();
+   if(!g_tsHave) return;
+   if(g_ts.all.n==0){ Print("TRADER JOURNAL: no closed trades recorded yet"); return; }
 
    //--- assemble
    string rep="";
@@ -586,66 +658,53 @@ void Trader_Report()
    rep+=StringFormat("  TRADER BEHAVIOUR REPORT   %s   %s\r\n",_Symbol,TimeToString(TimeCurrent(),TIME_DATE|TIME_MINUTES));
    rep+="=====================================================================\r\n\r\n";
    rep+=StringFormat("  %d closed trades on record.  Balance %.2f -> %.2f  (%+.2f)\r\n\r\n",
-                     all.n,firstBal,lastBal,lastBal-firstBal);
+                     g_ts.all.n,g_ts.firstBal,g_ts.lastBal,g_ts.lastBal-g_ts.firstBal);
    rep+="  Every line below is n / win rate / average R / total R / money.\r\n";
    rep+=StringFormat("  A split with fewer than %d trades is marked thin and should not\r\n",InpReportMinN);
    rep+="  be read as a finding.\r\n\r\n";
 
    rep+="--- OVERALL ---------------------------------------------------------\r\n";
-   rep+=RG_Line(all)+"\r\n\r\n";
+   rep+=RG_Line(g_ts.all)+"\r\n\r\n";
 
    rep+="--- DID YOU FOLLOW THE PANEL? ---------------------------------------\r\n";
-   rep+=RG_Line(withS)+"\r\n"+RG_Line(against)+"\r\n"+RG_Line(noSig)+"\r\n\r\n";
+   rep+=RG_Line(g_ts.withS)+"\r\n"+RG_Line(g_ts.against)+"\r\n"+RG_Line(g_ts.noSig)+"\r\n\r\n";
 
    rep+="--- BY SETUP GRADE --------------------------------------------------\r\n";
-   rep+=RG_Line(gA)+"\r\n"+RG_Line(gB)+"\r\n"+RG_Line(gC)+"\r\n"+RG_Line(gNone)+"\r\n\r\n";
+   rep+=RG_Line(g_ts.gA)+"\r\n"+RG_Line(g_ts.gB)+"\r\n"+RG_Line(g_ts.gC)+"\r\n"+RG_Line(g_ts.gNone)+"\r\n\r\n";
 
    rep+="--- DISCIPLINE ------------------------------------------------------\r\n";
-   rep+=RG_Line(hasStop)+"\r\n"+RG_Line(noStop)+"\r\n";
-   rep+=RG_Line(sized)+"\r\n"+RG_Line(over)+"\r\n";
-   rep+=RG_Line(revN)+"\r\n"+RG_Line(revY)+"\r\n";
-   if(newsY.n>0) rep+=RG_Line(newsY)+"\r\n";
-   if(sessY.n>0) rep+=RG_Line(sessY)+"\r\n";
+   rep+=RG_Line(g_ts.hasStop)+"\r\n"+RG_Line(g_ts.noStop)+"\r\n";
+   rep+=RG_Line(g_ts.sized)+"\r\n"+RG_Line(g_ts.over)+"\r\n";
+   rep+=RG_Line(g_ts.revN)+"\r\n"+RG_Line(g_ts.revY)+"\r\n";
+   if(g_ts.newsY.n>0) rep+=RG_Line(g_ts.newsY)+"\r\n";
+   if(g_ts.sessY.n>0) rep+=RG_Line(g_ts.sessY)+"\r\n";
    rep+="\r\n";
 
    rep+="--- HOLDING ---------------------------------------------------------\r\n";
-   if(winN>0)  rep+=StringFormat("  winners held  %6.1f min average  (n=%d)\r\n",winSecs/60.0/winN,winN);
-   if(lossN>0) rep+=StringFormat("  losers  held  %6.1f min average  (n=%d)\r\n",lossSecs/60.0/lossN,lossN);
-   if(winN>0 && lossN>0 && (double)winSecs/MathMax(1,winN) < (double)lossSecs/MathMax(1,lossN))
+   const int winN=g_ts.winN, lossN=g_ts.lossN;
+   if(winN>0)  rep+=StringFormat("  winners held  %6.1f min average  (n=%d)\r\n",g_ts.winSecs/60.0/winN,winN);
+   if(lossN>0) rep+=StringFormat("  losers  held  %6.1f min average  (n=%d)\r\n",g_ts.lossSecs/60.0/lossN,lossN);
+   if(winN>0 && lossN>0 && (double)g_ts.winSecs/MathMax(1,winN) < (double)g_ts.lossSecs/MathMax(1,lossN))
       rep+="  You hold losers longer than winners. That is the classic pattern.\r\n";
-   if(gaveN>0)
-      rep+=StringFormat("  winners gave back %.2fR on average from their best point (n=%d)\r\n",gaveBack/gaveN,gaveN);
+   if(g_ts.gaveN>0)
+      rep+=StringFormat("  winners gave back %.2fR on average from their best point (n=%d)\r\n",g_ts.gaveBack/g_ts.gaveN,g_ts.gaveN);
    rep+="\r\n";
 
    rep+="--- BY HOUR (server time, only hours you traded) ---------------------\r\n";
-   for(int i=0;i<24;i++) if(byHour[i].n>0) rep+=RG_Line(byHour[i])+"\r\n";
+   for(int i=0;i<24;i++) if(g_ts.byHour[i].n>0) rep+=RG_Line(g_ts.byHour[i])+"\r\n";
    rep+="\r\n";
 
    rep+="--- BY WEEKDAY ------------------------------------------------------\r\n";
    const string dayName[7]={"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
-   for(int i=0;i<7;i++) if(byDow[i].n>0)
-   { RGroup g=byDow[i]; g.name=dayName[i]; rep+=RG_Line(g)+"\r\n"; }
+   for(int i=0;i<7;i++) if(g_ts.byDow[i].n>0)
+   { RGroup g=g_ts.byDow[i]; g.name=dayName[i]; rep+=RG_Line(g)+"\r\n"; }
    rep+="\r\n";
 
    //--- the one or two things actually worth changing
    rep+="--- WHAT THE FILE SUGGESTS ------------------------------------------\r\n";
-   int said=0;
-   if(noStop.n>=InpReportMinN && noStop.sumMoney<0)
-   { rep+=StringFormat("  * Trading without a stop has cost you %.2f over %d trades.\r\n",-noStop.sumMoney,noStop.n); said++; }
-   if(against.n>=InpReportMinN && withS.n>=InpReportMinN)
-   {
-      if(against.sumR/against.n < withS.sumR/withS.n)
-         rep+=StringFormat("  * Overriding the panel is costing you: %+.2fR per trade against\r\n    it versus %+.2fR with it.\r\n",
-                           against.sumR/against.n,withS.sumR/withS.n);
-      else
-         rep+=StringFormat("  * You beat the panel when you override it: %+.2fR against versus\r\n    %+.2fR with. The ensemble may be too strict for you.\r\n",
-                           against.sumR/against.n,withS.sumR/withS.n);
-      said++;
-   }
-   if(over.n>=InpReportMinN && over.sumR/over.n < sized.sumR/MathMax(1,sized.n))
-   { rep+=StringFormat("  * Oversized trades do worse: %+.2fR versus %+.2fR when you stay\r\n    inside your own risk setting.\r\n",over.sumR/over.n,sized.sumR/MathMax(1,sized.n)); said++; }
-   if(revY.n>=InpReportMinN && revY.sumR<0)
-   { rep+=StringFormat("  * The %d trades you opened within %d minutes of a loss total %+.2fR.\r\n",revY.n,InpRevengeMinutes,revY.sumR); said++; }
+   string lng[],shr[]; bool good[];
+   const int said=Trader_Findings(g_ts,lng,shr,good);
+   for(int i=0;i<said;i++) rep+="  * "+lng[i]+"\r\n";
    if(said==0) rep+="  Nothing yet with a big enough sample to call. Keep trading and re-run.\r\n";
    rep+="\r\n=====================================================================\r\n";
 
@@ -657,14 +716,113 @@ void Trader_Report()
    if(wh!=INVALID_HANDLE){ FileWriteString(wh,rep); FileClose(wh); }
 
    Print("================ TRADER BEHAVIOUR REPORT ================");
-   Print(RG_Line(all));
-   Print(RG_Line(withS));
-   Print(RG_Line(against));
-   Print(RG_Line(noSig));
-   Print(RG_Line(noStop));
-   Print(RG_Line(over));
-   Print(RG_Line(revY));
+   Print(RG_Line(g_ts.all));
+   Print(RG_Line(g_ts.withS));
+   Print(RG_Line(g_ts.against));
+   Print(RG_Line(g_ts.noSig));
+   Print(RG_Line(g_ts.noStop));
+   Print(RG_Line(g_ts.over));
+   Print(RG_Line(g_ts.revY));
    PrintFormat("Full report: %s\\Files\\%s",TerminalInfoString(TERMINAL_COMMONDATA_PATH),fn);
    g_lastAction="report written: "+fn;
+}
+
+//+------------------------------------------------------------------+
+//| v6.95: THE MY STATS TAB                                           |
+//|                                                                  |
+//| The report's headlines as a two-column grid: you and the panel,   |
+//| and by grade, on the left; discipline on the right; the first     |
+//| finding under it. A row under InpReportMinN trades is dim - the   |
+//| same "too thin to read" the report says in words.                 |
+//+------------------------------------------------------------------+
+#define TRADER_TAB_ROWS 7
+
+//--- the tab shows the file as of the last trade to close, and re-reads
+//--- it at most once a minute otherwise (another chart may append to it)
+void Trader_StatsRefresh()
+{
+   if(!g_trOK) return;
+   if(!g_tsDirty && g_tsAt>0 && TimeLocal()-g_tsAt<60) return;
+   g_tsHave=Trader_Scan(g_ts);
+   g_tsDirty=false; g_tsAt=TimeLocal();
+}
+
+string TR_Cell(const string name,const RGroup &g)
+{
+   if(g.n==0) return StringFormat("%-10s  -",name);
+   return StringFormat("%-10s n=%-3d %3.0f%% %+.2fR",name,g.n,(double)g.wins/g.n*100.0,g.sumR/g.n);
+}
+
+color TR_CellColor(const RGroup &g)
+{
+   if(g.n==0 || g.n<InpReportMinN) return C_DIM;       // thin: not a finding yet
+   const double a=g.sumR/g.n;
+   return (a>0 ? C_BULL : a<0 ? C_BEAR : C_TEXT);
+}
+
+string TR_Mins(const double m){ return (m<60 ? StringFormat("%.0fm",m) : StringFormat("%.1fh",m/60.0)); }
+
+void Trader_TabText(string &cap,string &lt[],color &lc[],string &rt[],color &rc[],string &fnd,color &fc)
+{
+   for(int k=0;k<TRADER_TAB_ROWS;k++){ lt[k]=""; rt[k]=""; lc[k]=C_DIM; rc[k]=C_DIM; }
+   fnd=""; fc=C_DIM;
+
+   if(!Trader_Enabled())
+   { cap="MY STATS  (journal off)"; fnd="Set InpTraderJournal=true to record your own trades and grade them here."; return; }
+   if(!g_trOK)
+   { cap="MY STATS  (no journal file)"; fnd="The journal file could not be opened - the Experts log says why."; return; }
+   if(!g_tsHave || g_ts.all.n==0)
+   {
+      cap="MY STATS  no closed trades on "+_Symbol+" yet";
+      fnd="Every trade you open and close here is recorded and graded against the panel.";
+      return;
+   }
+
+   cap=StringFormat("MY STATS  %d closed  |  balance %.2f -> %.2f (%+.2f)",
+                    g_ts.all.n,g_ts.firstBal,g_ts.lastBal,g_ts.lastBal-g_ts.firstBal);
+
+   //--- left: you and the panel
+   lt[0]=TR_Cell("ALL",      g_ts.all);     lc[0]=TR_CellColor(g_ts.all);
+   lt[1]=TR_Cell("WITH",     g_ts.withS);   lc[1]=TR_CellColor(g_ts.withS);
+   lt[2]=TR_Cell("AGAINST",  g_ts.against); lc[2]=TR_CellColor(g_ts.against);
+   lt[3]=TR_Cell("no signal",g_ts.noSig);   lc[3]=TR_CellColor(g_ts.noSig);
+   lt[4]=TR_Cell("grade A",  g_ts.gA);      lc[4]=TR_CellColor(g_ts.gA);
+   lt[5]=TR_Cell("grade B",  g_ts.gB);      lc[5]=TR_CellColor(g_ts.gB);
+   lt[6]=TR_Cell("grade C",  g_ts.gC);      lc[6]=TR_CellColor(g_ts.gC);
+
+   //--- right: discipline
+   rt[0]=TR_Cell("with stop",g_ts.hasStop); rc[0]=TR_CellColor(g_ts.hasStop);
+   rt[1]=TR_Cell("NO stop",  g_ts.noStop);  rc[1]=TR_CellColor(g_ts.noStop);
+   rt[2]=TR_Cell("in size",  g_ts.sized);   rc[2]=TR_CellColor(g_ts.sized);
+   rt[3]=TR_Cell("OVERSIZED",g_ts.over);    rc[3]=TR_CellColor(g_ts.over);
+   rt[4]=TR_Cell("revenge",  g_ts.revY);    rc[4]=TR_CellColor(g_ts.revY);
+   if(g_ts.winN>0 || g_ts.lossN>0)
+   {
+      const double wm=(g_ts.winN >0 ? g_ts.winSecs /60.0/g_ts.winN  : 0.0);
+      const double lm=(g_ts.lossN>0 ? g_ts.lossSecs/60.0/g_ts.lossN : 0.0);
+      rt[5]=StringFormat("%-10s win %s / loss %s","held",
+                         (g_ts.winN>0 ? TR_Mins(wm) : "-"),(g_ts.lossN>0 ? TR_Mins(lm) : "-"));
+      const bool thin=(g_ts.winN<InpReportMinN || g_ts.lossN<InpReportMinN);
+      //--- holding losers longer than winners is the classic pattern: warn
+      rc[5]=(thin ? C_DIM : (lm>wm ? C_WARN : C_TEXT));
+   }
+   if(g_ts.gaveN>0)
+   {
+      rt[6]=StringFormat("%-10s %.2fR from best, n=%d","gave back",g_ts.gaveBack/g_ts.gaveN,g_ts.gaveN);
+      rc[6]=(g_ts.gaveN<InpReportMinN ? C_DIM : C_TEXT);
+   }
+
+   //--- the first finding; the full report lists the rest
+   string lng[],shr[]; bool good[];
+   const int nf=Trader_Findings(g_ts,lng,shr,good);
+   if(nf>0)
+   {
+      fnd=shr[0]+(nf>1 ? StringFormat("  (+%d more in FULL REPORT)",nf-1) : "");
+      fc=(good[0] ? C_BULL : C_WARN);
+   }
+   else if(g_ts.all.n<InpReportMinN)
+      fnd=StringFormat("Findings need %d trades in a split - you have %d. Dim rows are too thin to read.",InpReportMinN,g_ts.all.n);
+   else
+      fnd="Nothing with a big enough sample to call yet. Dim rows are too thin to read.";
 }
 //+------------------------------------------------------------------+

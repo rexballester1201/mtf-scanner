@@ -74,10 +74,12 @@ int      g_histMins[MAX_HIST_LB];
 int      g_histCfgN  = 0;
 datetime g_histBar   = 0;
 
-int Hist_BlockH()
+//--- v6.95: rows the SIGNAL HISTORY tab shows - now, each lookback, and the
+//--- summary. 0 when the strip is off; the tab then says so instead.
+int Hist_PanelRows()
 {
    if(!InpShowHistory || g_histCfgN<=0) return 0;
-   return 20 + (2+g_histCfgN)*14;          // header, then now + lookbacks + summary
+   return 2+g_histCfgN;
 }
 
 void Hist_Init()

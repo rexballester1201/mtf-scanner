@@ -9,6 +9,12 @@ Two engines share one signal core.
 shows per-timeframe and overall BUY/SELL bias, and gives you a draggable ticket — lot,
 risk %, stop, target — with BUY and SELL buttons. Those orders fire only when you click.
 
+Below the timeframe table, four tabs share one fixed-height area: **Market Bias** (the
+gauge and the verdict card, shown by default), **Signal History**, **Exposure / Hedge**
+and **My Stats**. The area never resizes when you switch tabs, so the BUY and SELL
+buttons never move under the mouse. The current call is also repeated in the ticket
+header, so it stays visible whichever tab is open.
+
 **The auto trend engine** reads the same ensemble and opens, manages and closes trades on
 its own with a trailing stop. Every decision comes from an input; nothing is hard-coded
 and nothing is read from the panel's live edit boxes. It is disabled unless you set
