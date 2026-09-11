@@ -9,11 +9,17 @@ Two engines share one signal core.
 shows per-timeframe and overall BUY/SELL bias, and gives you a draggable ticket — lot,
 risk %, stop, target — with BUY and SELL buttons. Those orders fire only when you click.
 
-Below the timeframe table, four tabs share one fixed-height area: **Market Bias** (the
-gauge and the verdict card, shown by default), **Signal History**, **Exposure / Hedge**
-and **My Stats**. The area never resizes when you switch tabs, so the BUY and SELL
-buttons never move under the mouse. The current call is also repeated in the ticket
-header, so it stays visible whichever tab is open.
+Below the timeframe table, five tabs share one fixed-height area: **Market Bias** (the
+gauge and the verdict card, shown by default), **Signal History**, **Exposure / Hedge**,
+**Watchlist** and **My Stats**. The area never resizes when you switch tabs, so the BUY
+and SELL buttons never move under the mouse, and the panel's height no longer depends on
+how many pairs you watch: past eight pairs the watchlist becomes a grid of up to 24. The
+current call is also repeated in the ticket header, so it stays visible whichever tab is
+open.
+
+MT5 cuts the text of any chart object at 63 characters, however wide it is. Panel lines
+that can run longer are drawn as two labels joined at a word boundary, so they show in
+full instead of losing their tails.
 
 **The auto trend engine** reads the same ensemble and opens, manages and closes trades on
 its own with a trailing stop. Every decision comes from an input; nothing is hard-coded

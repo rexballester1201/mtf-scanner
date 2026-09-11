@@ -713,10 +713,10 @@
 //+------------------------------------------------------------------+
 #property copyright "AstroBot MTF Scanner"
 #property link      "https://astrobot-ea.live"
-#property version   "6.95"
+#property version   "6.97"
 #property strict
 
-#define AB_VERSION "6.95"   // v6.1: one place for the number the ready-line and the journal print
+#define AB_VERSION "6.97"   // v6.1: one place for the number the ready-line and the journal print
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -1316,16 +1316,20 @@ int TextPxWidth(const string s,const int fs,const string fn="Consolas")
 //| Only the tab on show is drawn each second. SetTab draws the new  |
 //| one before showing it, so a switch never flashes stale text.     |
 //+------------------------------------------------------------------+
-#define TAB_COUNT     4
+#define TAB_COUNT     5
 #define TAB_BIAS      0
 #define TAB_HIST      1
 #define TAB_HEDGE     2
-#define TAB_STATS     3
+#define TAB_WATCH     3     // v6.96
+#define TAB_STATS     4     // v6.97: MY STATS is the last tab
+//--- v6.97: the ORDER of the tabs is these numbers and nothing else. The
+//--- labels are filled in by index and button N opens tab N, so moving a
+//--- tab means swapping two numbers here.
 #define TAB_BTN_H     22
 #define TAB_GAP       3
 #define TAB_ROWS      8     // lines under a tab's caption: now + 6 lookbacks + summary, or the stats grid + a finding
 #define TAB_CONTENT_H (24+TAB_ROWS*14)
-#define TAB_MAX_CTL   64    // controls registered to a tab
+#define TAB_MAX_CTL   96    // controls registered to a tab (66 with a full watchlist)
 
 //--- the tab on show. UI state like g_ui_auto: it survives a timeframe
 //--- change and starts on MARKET BIAS when the EA is attached.
@@ -1338,6 +1342,83 @@ int TabStripY()     { return 176+(TF_COUNT-6)*14; }
 int PanelTicketDY() { return TabStripY()+TAB_BTN_H+TAB_CONTENT_H+6-240; }
 
 //+------------------------------------------------------------------+
+//| v6.96: A LINE LONGER THAN ONE CHART OBJECT CAN HOLD              |
+//|                                                                  |
+//| MT5 cuts a chart object's text at 63 characters - silently, and  |
+//| whatever room the object has. v6.52 fitted every line to the     |
+//| PIXELS available, which cured one truncation and hid this one: a |
+//| 67-character caption measured as fitting, drew 63, and lost its  |
+//| tail with space to spare on the right.                           |
+//|                                                                  |
+//| CLine is two labels acting as one control. Past 63 characters    |
+//| the text breaks after a space, and the second label starts       |
+//| exactly where the first one's glyphs end, measured at the size   |
+//| drawn, so the pair reads as a single line. As a CWndContainer it |
+//| moves with the dialog and hides and shows as one, so tabs and    |
+//| dragging need nothing extra.                                     |
+//+------------------------------------------------------------------+
+#define OBJ_TEXT_MAX 63
+
+class CLine : public CWndContainer
+{
+private:
+   CLabel  m_a, m_b;
+   string  m_fn;
+public:
+   bool Make(const long chart,const string name,const int subwin,const int x,const int y,const int w,const string fn);
+   void Set(const string text,const color c,const int fs);
+};
+
+bool CLine::Make(const long chart,const string name,const int subwin,const int x,const int y,const int w,const string fn)
+{
+   if(!CWndContainer::Create(chart,name,subwin,x,y,x+w,y+16)) return false;
+   m_fn=fn;
+   //--- children are placed relative to the container; Add moves them onto it
+   if(!m_a.Create(chart,name+"a",subwin,0,0,w,16)) return false;
+   if(!m_b.Create(chart,name+"b",subwin,0,0,w,16)) return false;
+   if(!Add(m_a) || !Add(m_b)) return false;
+   m_a.Font(fn); m_b.Font(fn);
+   return true;
+}
+
+void CLine::Set(const string text,const color c,const int fs)
+{
+   string a=text, b="";
+   if(StringLen(text)>OBJ_TEXT_MAX)
+   {
+      //--- break after the last space that keeps the first part inside the
+      //--- limit, so the join falls between two words
+      int k=OBJ_TEXT_MAX;
+      while(k>OBJ_TEXT_MAX/2 && StringGetCharacter(text,k-1)!=' ') k--;
+      if(k<=OBJ_TEXT_MAX/2) k=OBJ_TEXT_MAX;
+      a=StringSubstr(text,0,k);
+      b=StringSubstr(text,k);
+      if(StringLen(b)>OBJ_TEXT_MAX) b=StringSubstr(b,0,OBJ_TEXT_MAX-2)+"..";
+   }
+   m_a.Text(a);  m_a.Color(c);  m_a.FontSize(fs);
+   m_b.Text(b);  m_b.Color(c);  m_b.FontSize(fs);
+   //--- the second part starts where the first one's glyphs end
+   const int x=m_a.Left()+(StringLen(b)>0 ? TextPxWidth(a,fs,m_fn) : 0);
+   if(m_b.Left()!=x || m_b.Top()!=m_a.Top()) m_b.Move(x,m_a.Top());
+}
+
+//--- the fitting both kinds of line share: shrink a step at a time to 6pt,
+//--- then trim and mark the cut with ".."
+string FitText(const string text,const int fsWant,const int maxPx,int &fs)
+{
+   fs=fsWant;
+   string t=text;
+   while(fs>6 && TextPxWidth(t,fs)>maxPx) fs--;
+   if(TextPxWidth(t,fs)>maxPx)
+   {
+      while(StringLen(t)>3 && TextPxWidth(t+"..",fs)>maxPx)
+         t=StringSubstr(t,0,StringLen(t)-1);
+      t+="..";
+   }
+   return t;
+}
+
+//+------------------------------------------------------------------+
 //| The panel                                                        |
 //+------------------------------------------------------------------+
 class CScannerPanel : public CAppDialog
@@ -1347,9 +1428,11 @@ private:
    CPanel  m_band1, m_band3, m_band4;
    CPanel  m_sep1, m_sep2, m_sep5;
 
-   CLabel  m_sub, m_mtfHdr, m_col;
+   CLine   m_sub;                          // v6.96: CLine = a line that may run past 63 characters
+   CLabel  m_mtfHdr, m_col;
    CLabel  m_tf[TF_COUNT];
-   CLabel  m_fltHdr, m_flt;
+   CLabel  m_fltHdr;
+   CLine   m_flt;
    //--- v6.95: the tab strip, the frame its content sits in, and a register
    //--- of which control belongs to which tab
    CButton m_tabBtn[TAB_COUNT];
@@ -1359,34 +1442,39 @@ private:
    int     m_twN;
    int     m_inW;                          // text width inside the frame
    //--- tab 0: overall market bias, with the verdict card (v6.5)
-   CLabel  m_ovHdr, m_bias, m_gPct;
+   CLabel  m_ovHdr, m_gPct;
+   CLine   m_bias;
    CPanel  m_gTrack, m_gBuy, m_gSell, m_gMid;
    CPanel  m_bandV;
-   CLabel  m_vHead, m_vLev, m_vPros, m_vCons;
+   CLabel  m_vHead;
+   CLine   m_vLev, m_vPros, m_vCons;
    int     m_vW;
    //--- tab 1: signal history (v6.93)
-   CLabel  m_hsHdr;
-   CLabel  m_hs[MAX_HIST_ROWS];
+   CLine   m_hsHdr;
+   CLine   m_hs[MAX_HIST_ROWS];
    int     m_hsRows;
    //--- tab 2: exposure and hedging (v6.8)
-   CLabel  m_hHdr, m_hExpo, m_hNote;
-   CLabel  m_hRow[MAX_HEDGE_ROWS];
-   //--- tab 3: my stats (the v6.6 journal, read back)
-   CLabel  m_sHdr, m_sFind;
+   CLine   m_hHdr, m_hExpo, m_hNote;
+   CLine   m_hRow[MAX_HEDGE_ROWS];
+   //--- MY STATS tab (the v6.6 journal, read back)
+   CLine   m_sHdr, m_sFind;
    CLabel  m_sL[TRADER_TAB_ROWS], m_sR[TRADER_TAB_ROWS];
    CButton m_btnReport;
    int     m_colW, m_repW;
-   CLabel  m_tkHdr, m_lbLot, m_lbRisk, m_lbCap, m_lbSL, m_lbTP, m_est, m_pos;
+   //--- WATCHLIST tab (v6.7; a tab since v6.96)
+   CLine   m_wHdr;
+   CLabel  m_wl[MAX_WATCH];
+   int     m_wlRows;                       // cells created
+   int     m_wlCols;                       // 1 = a full row per pair; 2 or 3 = a grid of short cells
+   int     m_wlColW;
+   CLabel  m_tkHdr, m_lbLot, m_lbRisk, m_lbCap, m_lbSL, m_lbTP;
+   CLine   m_est, m_pos;
    CEdit   m_edLot, m_edRisk, m_edSL, m_edTP;
    CButton m_btnAuto, m_btnSize, m_btnAtrTF, m_btnBuy, m_btnSell, m_btnClose;
    //--- v4.0 auto engine strip
-   CLabel  m_auHdr, m_auState, m_auStats, m_auMsg;
+   CLabel  m_auHdr;
+   CLine   m_auState, m_auStats, m_auMsg;
    CButton m_btnAutoOn, m_btnTrail, m_btnCloseAuto;
-   //--- v6.7: the watchlist
-   CPanel  m_bandW;
-   CLabel  m_wHdr;
-   CLabel  m_wl[MAX_WATCH];
-   int     m_wlRows;        // how many rows actually fit in the client area
    int     m_gaugeW;
    int     m_gaugeX;
    //--- v6.52: the widths every fitted label and button measures against
@@ -1401,6 +1489,7 @@ public:
 
 protected:
    bool MkLabel(CLabel &l,string id,int x,int y,int w,string txt,color c,int fs=9,string fn="Consolas");
+   bool MkLabel(CLine &l,string id,int x,int y,int w,string txt,color c,int fs=9,string fn="Consolas");
    bool MkEdit(CEdit &e,string id,int x,int y,int w,string txt);
    bool MkButton(CButton &b,string id,int x,int y,int w,int h,string txt,color bg,color fg,int fs=9);
    bool MkPanel(CPanel &p,string id,int x,int y,int w,int h,color bg,color bd=clrNONE);
@@ -1409,19 +1498,21 @@ protected:
    void Paint(string id,color c,int fs=-1);
    //--- v6.52: set text that is guaranteed to fit, by measuring it
    void FitLabel(CLabel &l,string id,string text,color c,int fsWant,int maxPx);
+   void FitLabel(CLine &l,string id,string text,color c,int fsWant,int maxPx);
    void FitButton(CButton &b,string id,string text,int fsWant,int maxPx);
    //--- v6.95: tabs
    void TabReg(const int t,CWnd &w);
    bool TabLabel(const int t,CLabel &l,string id,int x,int y,int w,string txt,color c,int fs=8);
+   bool TabLabel(const int t,CLine &l,string id,int x,int y,int w,string txt,color c,int fs=8);
    bool TabPanel(const int t,CPanel &p,string id,int x,int y,int w,int h,color bg,color bd=clrNONE);
    void ApplyTabs();
    void SetTab(const int t);
-   void RefreshBias(); void RefreshHist(); void RefreshHedge(); void RefreshStats();
+   void RefreshBias(); void RefreshHist(); void RefreshHedge(); void RefreshStats(); void RefreshWatch();
    virtual void Maximize(void);
 
    void OnBuy();  void OnSell();  void OnCloseAll();
    void OnAuto(); void OnSize();  void OnAtrTF(); void OnReport();
-   void OnTab0(); void OnTab1();  void OnTab2();  void OnTab3();
+   void OnTab0(); void OnTab1();  void OnTab2();  void OnTab3();  void OnTab4();
    void OnAutoOn(); void OnTrail(); void OnCloseAuto();
    void OnEditLot(); void OnEditRisk(); void OnEditSL(); void OnEditTP();
 
@@ -1430,6 +1521,7 @@ protected:
       ON_EVENT(ON_CLICK,    m_tabBtn[1],    OnTab1)
       ON_EVENT(ON_CLICK,    m_tabBtn[2],    OnTab2)
       ON_EVENT(ON_CLICK,    m_tabBtn[3],    OnTab3)
+      ON_EVENT(ON_CLICK,    m_tabBtn[4],    OnTab4)
       ON_EVENT(ON_CLICK,    m_btnReport,    OnReport)
       ON_EVENT(ON_CLICK,    m_btnBuy,       OnBuy)
       ON_EVENT(ON_CLICK,    m_btnSell,      OnSell)
@@ -1529,16 +1621,36 @@ void CScannerPanel::ApplyDarkChrome()
 void CScannerPanel::FitLabel(CLabel &l,string id,string text,color c,int fsWant,int maxPx)
 {
    int fs=fsWant;
-   string t=text;
-   while(fs>6 && TextPxWidth(t,fs)>maxPx) fs--;
-   if(TextPxWidth(t,fs)>maxPx)
-   {
-      while(StringLen(t)>3 && TextPxWidth(t+"..",fs)>maxPx)
-         t=StringSubstr(t,0,StringLen(t)-1);
-      t+="..";
-   }
+   string t=FitText(text,fsWant,maxPx,fs);
+   //--- v6.96: a plain label holds 63 characters, whatever its width. Longer
+   //--- text belongs in a CLine; if some ever reaches a plain label, mark the
+   //--- cut rather than let the terminal drop the tail unseen.
+   if(StringLen(t)>OBJ_TEXT_MAX) t=StringSubstr(t,0,OBJ_TEXT_MAX-2)+"..";
    l.Text(t);
    Paint(id,c,fs);
+}
+
+//--- v6.96: the same fitting, for a line that may run past 63 characters
+void CScannerPanel::FitLabel(CLine &l,string id,string text,color c,int fsWant,int maxPx)
+{
+   int fs=fsWant;
+   const string t=FitText(text,fsWant,maxPx,fs);
+   l.Set(t,c,fs);
+}
+
+bool CScannerPanel::MkLabel(CLine &l,string id,int x,int y,int w,string txt,color c,int fs,string fn)
+{
+   if(!l.Make(m_chart_id,m_name+id,m_subwin,x,y,w,fn)) return false;
+   if(!Add(l)) return false;
+   l.Set(txt,c,fs);
+   return true;
+}
+
+bool CScannerPanel::TabLabel(const int t,CLine &l,string id,int x,int y,int w,string txt,color c,int fs)
+{
+   if(!MkLabel(l,id,x,y,w,txt,c,fs)) return false;
+   TabReg(t,l);
+   return true;
 }
 
 void CScannerPanel::FitButton(CButton &b,string id,string text,int fsWant,int maxPx)
@@ -1633,17 +1745,22 @@ bool CScannerPanel::BuildControls()
    const int IW = W - 8;
    m_inW = IW;
 
-   //--- one size for all four labels: the largest at which every one fits
+   //--- one size for all five labels: the largest at which every one fits
    //--- in full on THIS display. Widths then follow the words, so the long
    //--- name gets the room and no label is clipped or set smaller than its
    //--- neighbours.
-   const string tabName[TAB_COUNT] = {"MARKET BIAS","SIGNAL HISTORY","EXPOSURE / HEDGE","MY STATS"};
+   string tabName[TAB_COUNT];
+   tabName[TAB_BIAS] ="MARKET BIAS";
+   tabName[TAB_HIST] ="SIGNAL HISTORY";
+   tabName[TAB_HEDGE]="EXPOSURE / HEDGE";
+   tabName[TAB_WATCH]="WATCHLIST";
+   tabName[TAB_STATS]="MY STATS";
    int tw[TAB_COUNT];
    int tfs=9, need=0;
    while(true)
    {
       need=(TAB_COUNT-1)*TAB_GAP;
-      for(int t=0;t<TAB_COUNT;t++){ tw[t]=TextPxWidth(tabName[t],tfs,"Arial Bold")+16; need+=tw[t]; }
+      for(int t=0;t<TAB_COUNT;t++){ tw[t]=TextPxWidth(tabName[t],tfs,"Arial Bold")+12; need+=tw[t]; }
       if(need<=BW || tfs<=6) break;
       tfs--;
    }
@@ -1702,7 +1819,7 @@ bool CScannerPanel::BuildControls()
       if(!TabLabel(TAB_HEDGE,m_hRow[i],"hr"+IntegerToString(i), IL, CT+34+i*14, IW, "", C_DIM)) return false;
    if(!TabLabel(TAB_HEDGE,m_hNote,"hn", IL, CT+20+(TAB_ROWS-1)*14, IW, "", C_DIM)) return false;
 
-   //--- tab 3: MY STATS. The journal's headlines as a two-column grid, the
+   //--- MY STATS tab. The journal's headlines as a two-column grid, the
    //--- first finding under it, and a button for the full report.
    m_repW = MathMin(IW/3, TextPxWidth("FULL REPORT",8,"Arial Bold")+18);
    if(!TabLabel(TAB_STATS,m_sHdr,"sth", IL, CT+4, IW-m_repW-8, "MY STATS", C_HEAD)) return false;
@@ -1715,6 +1832,21 @@ bool CScannerPanel::BuildControls()
       if(!TabLabel(TAB_STATS,m_sR[k],"sr"+IntegerToString(k), IL+m_colW+12, CT+20+k*14, m_colW, "", C_DIM)) return false;
    }
    if(!TabLabel(TAB_STATS,m_sFind,"sf", IL, CT+20+TRADER_TAB_ROWS*14, IW, "", C_DIM)) return false;
+
+   //--- WATCHLIST tab (v6.7). One full row per pair while the list fits
+   //--- the frame; a longer list becomes a grid of short cells - two columns
+   //--- up to 16 pairs, three up to 24 - so every pair stays on screen and
+   //--- the panel no longer grows with the list.
+   if(!TabLabel(TAB_WATCH,m_wHdr,"wh", IL, CT+4, IW, "WATCHLIST", C_HEAD)) return false;
+   const int wn=Watch_Count();
+   m_wlCols=(wn<=TAB_ROWS ? 1 : wn<=2*TAB_ROWS ? 2 : 3);
+   m_wlColW=(IW-(m_wlCols-1)*12)/m_wlCols;
+   m_wlRows=MathMax(1,MathMin(wn,MathMin(MAX_WATCH,m_wlCols*TAB_ROWS)));
+   for(int i=0;i<m_wlRows;i++)
+   {
+      const int col=i/TAB_ROWS, row=i%TAB_ROWS;
+      if(!TabLabel(TAB_WATCH,m_wl[i],"wl"+IntegerToString(i), IL+col*(m_wlColW+12), CT+20+row*14, m_wlColW, "", C_DIM)) return false;
+   }
 
    //--- from here down one offset carries the ticket to just under the
    //--- frame, so every coordinate below still reads as its original number
@@ -1764,33 +1896,8 @@ bool CScannerPanel::BuildControls()
    if(!MkButton(m_btnAutoOn,   "bon",  L,  480+DY2, BTW,  22, "AUTO: OFF",  C'82,90,112', C_TEXT, 9)) return false;
    if(!MkButton(m_btnTrail,    "btrl", C2, 480+DY2, BTW,  22, "TRAIL: ATR", C'52,58,76',  C_TEXT, 9)) return false;
    if(!MkButton(m_btnCloseAuto,"bca",  C3, 480+DY2, BTW3, 22, "CLOSE AUTO", C'96,76,34',  C_TEXT, 9)) return false;
-   //--- bottom 502+DY2 (592) < client 596 (Panel_H 620 - 24)
-
-   //--- v6.7: the watchlist, last because it is the section whose height
-   //--- depends on how many symbols you asked for. Rows are created only
-   //--- as far as the client area actually reaches, so a Panel_H that is
-   //--- too short trims the list instead of drawing off the bottom edge.
-   //--- v6.95: the hedge block that followed it is a tab now, so this is
-   //--- the only section left whose height varies.
-   int y = 506+DY2;
-
-   m_wlRows=0;
-   if(Watch_Count()>0)
-   {
-      const int rowTop=y+20;
-      const int fits=MathMax(0,MathMin(Watch_Count(),
-                     MathMin(MAX_WATCH,(ClientAreaHeight()-rowTop-2)/14)));
-      if(fits>0)
-      {
-         if(!MkPanel(m_bandW,"bdw", BX, y, BW, 17, C_CARD)) return false;
-         if(!MkLabel(m_wHdr,"wh", L+4, y+1, W, "WATCHLIST", C_HEAD)) return false;
-         m_wlRows=fits;
-         for(int i=0;i<m_wlRows;i++)
-            if(!MkLabel(m_wl[i],"wl"+IntegerToString(i), L, rowTop+i*14, W, "", C_DIM, 8)) return false;
-         y = rowTop + m_wlRows*14;
-      }
-      else Print("WATCHLIST: no room to draw - raise Panel_H");
-   }
+   //--- v6.96: the watchlist moved into the tabs, so nothing below the
+   //--- engine's buttons varies any more and the panel ends here
 
    return true;
 }
@@ -1800,7 +1907,6 @@ void CScannerPanel::Refresh()
 {
    ApplyDarkChrome();
 
-   Paint("sub", C_TEXT, 8);
    Paint("mh",  C_HEAD, 9);
    Paint("col", C_DIM,  8);
    Paint("fh",  C_HEAD, 8);
@@ -1863,6 +1969,7 @@ void CScannerPanel::Refresh()
       case TAB_HIST:  RefreshHist();  break;
       case TAB_HEDGE: RefreshHedge(); break;
       case TAB_STATS: RefreshStats(); break;
+      case TAB_WATCH: RefreshWatch(); break;
       default:        RefreshBias();  break;
    }
 
@@ -1953,22 +2060,6 @@ void CScannerPanel::Refresh()
              TrailModeName(g_trailMode), TrailModeName((ENUM_TRAIL_MODE)nextTrail)), 9, m_btnW);
    m_btnTrail.ColorBackground(g_trailMode==TRAIL_OFF ? C'82,90,112' : C'52,58,76');
 
-   //--- v6.7: the watchlist, strongest reading first
-   if(m_wlRows>0)
-   {
-      Paint("wh", C_HEAD, 9);
-      const int total=Watch_Count();
-      m_wHdr.Text(m_wlRows<total
-                  ? StringFormat("WATCHLIST  (showing %d of %d - raise Panel_H for the rest)",m_wlRows,total)
-                  : StringFormat("WATCHLIST  (%d pairs, scan only)",total));
-      int ord[]; Watch_Order(ord);
-      for(int i=0;i<m_wlRows;i++)
-      {
-         const int s=ord[i];
-         FitLabel(m_wl[i],"wl"+IntegerToString(i), Watch_Row(s), Watch_RowColor(s), 8, m_lblW);
-      }
-   }
-
    //--- v6.95: last, so it also undoes anything the dialog library re-showed
    ApplyTabs();
 }
@@ -2029,10 +2120,13 @@ void CScannerPanel::OnReport()
    Refresh();
 }
 
-void CScannerPanel::OnTab0(){ SetTab(TAB_BIAS);  }
-void CScannerPanel::OnTab1(){ SetTab(TAB_HIST);  }
-void CScannerPanel::OnTab2(){ SetTab(TAB_HEDGE); }
-void CScannerPanel::OnTab3(){ SetTab(TAB_STATS); }
+//--- v6.97: buttons are laid out by tab index, so button N opens tab N
+//--- whatever the TAB_ numbers say the order is
+void CScannerPanel::OnTab0(){ SetTab(0); }
+void CScannerPanel::OnTab1(){ SetTab(1); }
+void CScannerPanel::OnTab2(){ SetTab(2); }
+void CScannerPanel::OnTab3(){ SetTab(3); }
+void CScannerPanel::OnTab4(){ SetTab(4); }
 
 //+------------------------------------------------------------------+
 //| v6.95: tabs                                                       |
@@ -2117,13 +2211,15 @@ void CScannerPanel::RefreshBias()
    if(ci>=0 && g_R[ci].ready)
    {
       const bool agree=(g_R[ci].dir>0&&g_overallDir>0)||(g_R[ci].dir<0&&g_overallDir<0)||(g_R[ci].dir==0&&g_overallDir==0);
-      curNote=StringFormat("| %s %s", g_tfName[ci], agree?"AGREES":"DIVERGES");
+      curNote=StringFormat("%s %s", g_tfName[ci], agree?"AGREES":"DIVERGES");
    }
-   else curNote="| chart TF not scanned";
+   else curNote="chart TF not scanned";
 
-   FitLabel(m_bias,"bi",StringFormat("%s %s  BUY %.0f%% / SELL %.0f%%  align %d▲ %d● %d▼ %s",
+   //--- v6.96: SELL% dropped - it is 100 minus BUY%, and the gauge readout
+   //--- beside this line prints both - which keeps it inside one object
+   FitLabel(m_bias,"bi",StringFormat("%s %s  BUY %.0f%%  align %d▲ %d● %d▼  %s",
             g_overallDir>0?"▲":g_overallDir<0?"▼":"●", g_overallLabel,
-            g_overallBuyPct, 100-g_overallBuyPct, g_up, g_nt, g_dn, curNote),
+            g_overallBuyPct, g_up, g_nt, g_dn, curNote),
             DirColor(g_overallDir), 9, m_inW);
 
    //--- v6.5: the verdict card. The headline takes the direction's colour
@@ -2165,8 +2261,12 @@ void CScannerPanel::RefreshHedge()
       FitLabel(m_hNote,"hn","",C_DIM,8,m_inW);
       return;
    }
-   FitLabel(m_hHdr,"hh",StringFormat("EXPOSURE AND HEDGE  (correlation over %d %s bars)",
-            g_corrPairs, g_tfName[ResolveTFIdx(InpCorrTF)]), C_HEAD, 8, m_inW);
+   //--- v6.96: say why there is no correlation yet, not "over 0 bars"
+   string corr;
+   if(Watch_Count()==0)    corr="list pairs in InpWatchSymbols to find offsets";
+   else if(g_corrPairs<20) corr="correlations still loading";
+   else                    corr=StringFormat("correlation over %d %s bars",g_corrPairs,g_tfName[ResolveTFIdx(InpCorrTF)]);
+   FitLabel(m_hHdr,"hh","EXPOSURE AND HEDGE  ("+corr+")", C_HEAD, 8, m_inW);
    FitLabel(m_hExpo,"hx", g_expoLine, C_TEXT, 8, m_inW);
    for(int i=0;i<MAX_HEDGE_ROWS;i++)
       FitLabel(m_hRow[i],"hr"+IntegerToString(i), (i<g_hedgeN ? g_hedgeRow[i] : ""), C_DIM, 8, m_inW);
@@ -2175,7 +2275,7 @@ void CScannerPanel::RefreshHedge()
             C_DIM, 8, m_inW);
 }
 
-//--- tab 3: your own journal, read back (v6.6)
+//--- MY STATS: your own journal, read back (v6.6)
 void CScannerPanel::RefreshStats()
 {
    Trader_StatsRefresh();               // re-reads the file only after a trade closes, or once a minute
@@ -2205,6 +2305,39 @@ void CScannerPanel::RefreshStats()
       FitLabel(m_sR[k],"sr"+IntegerToString(k),rt[k],rc[k],fs,m_colW);
    }
    FitLabel(m_sFind,"sf",fnd,fc,8,m_inW);
+}
+
+//--- WATCHLIST: the same ensemble across other pairs (v6.7), strongest first
+void CScannerPanel::RefreshWatch()
+{
+   const int total=Watch_Count();
+   if(total==0)
+   {
+      FitLabel(m_wHdr,"wh","WATCHLIST  (off)",C_HEAD,8,m_inW);
+      FitLabel(m_wl[0],"wl0","List pairs in InpWatchSymbols to scan them here.",C_DIM,8,m_wlColW);
+      return;
+   }
+   FitLabel(m_wHdr,"wh",StringFormat("WATCHLIST  (%d pairs, scan only%s)",total,
+            (InpWatchSortByConviction ? ", strongest first" : "")),C_HEAD,8,m_inW);
+   int ord[]; Watch_Order(ord);
+   string txt[MAX_WATCH]; color clr[MAX_WATCH];
+   const int n=MathMin(m_wlRows,ArraySize(ord));
+   for(int i=0;i<n;i++)
+   {
+      txt[i]=(m_wlCols==1 ? Watch_Row(ord[i]) : Watch_Cell(ord[i],m_wlCols==3));
+      clr[i]=Watch_RowColor(ord[i]);
+   }
+   //--- every cell at one size, like the other tables, so the grid stays aligned
+   int fs=8;
+   while(fs>6)
+   {
+      int wmax=0;
+      for(int i=0;i<n;i++) wmax=MathMax(wmax,TextPxWidth(txt[i],fs));
+      if(wmax<=m_wlColW) break;
+      fs--;
+   }
+   for(int i=0;i<n;i++)
+      FitLabel(m_wl[i],"wl"+IntegerToString(i),txt[i],clr[i],fs,m_wlColW);
 }
 
 void CScannerPanel::OnEditLot()
@@ -2370,20 +2503,19 @@ int OnInit()
    //--- A7: the panel is a convenience, not a precondition. Without it the
    //--- scanner has no output — but the auto engine still works, and the
    //--- non-visual tester can never build a CAppDialog.
-   //--- v6.7: the panel grows itself to fit the watchlist rather than
-   //--- making Panel_H a number you have to keep in step with the length
-   //--- of InpWatchSymbols. Panel_H is still the floor, so a taller
-   //--- setting is honoured and a shorter one is simply raised.
+   //--- v6.7: the panel grows itself to fit its sections rather than making
+   //--- Panel_H a number you have to keep in step with them. Panel_H is still
+   //--- the floor, so a taller setting is honoured and a shorter one raised.
+   //--- v6.96: with the watchlist in a tab, the height no longer depends on
+   //--- how many pairs you list.
    int panelH = Panel_H;
    {
-      //--- v6.95: the same offset BuildControls lays the ticket out with
-      int y = 506 + PanelTicketDY();
-      if(Watch_Count()>0)  y += 20 + Watch_Count()*14;
-      const int needed = y + 2 + 24;
+      //--- the engine's buttons end at 502 on the ticket's offset; then a
+      //--- margin, and the caption + border the dialog adds around the client
+      const int needed = 502 + PanelTicketDY() + 6 + 24;
       if(needed>panelH)
       {
-         PrintFormat("PANEL: height raised from %d to %d so every section fits%s",
-                     panelH,needed,(Watch_Count()>0 ? StringFormat(" (%d watchlist rows)",Watch_Count()) : ""));
+         PrintFormat("PANEL: height raised from %d to %d so every section fits",panelH,needed);
          panelH=needed;
       }
    }

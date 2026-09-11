@@ -62,8 +62,9 @@ double   g_cRet [MAX_CORR_SYM][MAX_CORR_BARS];
 double   g_cSd  [MAX_CORR_SYM];                   // stdev of those returns
 double   g_corr [MAX_CORR_SYM][MAX_CORR_SYM];
 int      g_corrN     = 0;
-int      g_corrPairs = 0;                         // overlapping bars on the last pair computed
+int      g_corrPairs = 0;                         // v6.96: the longest overlap between the chart symbol and a watched pair
 datetime g_corrBar   = 0;
+datetime g_corrRetryAt = 0;                       // v6.96: a symbol was still loading; try again at this local time
 
 //--- currency exposure
 string   g_ccyName[32];
@@ -160,12 +161,18 @@ void Hedge_ComputeCorr()
    const ENUM_TIMEFRAMES tf=g_tf[ResolveTFIdx(InpCorrTF)];
    const datetime bt=iTime(_Symbol,tf,0);
    if(bt!=0 && bt==g_corrBar && g_corrN>0) return;      // once per bar of the correlation TF
+   //--- v6.96: a symbol was still downloading history last time. Retry on a
+   //--- short clock rather than at the next bar, which on H1 could mean an
+   //--- hour of "no correlation" straight after attaching the EA.
+   if(g_corrRetryAt>0 && TimeLocal()<g_corrRetryAt) return;
    g_corrBar=bt;
 
    Hedge_BuildUniverse();
    bool ok[MAX_CORR_SYM];
-   for(int s=0;s<g_corrN;s++) ok[s]=Hedge_LoadReturns(s,tf,InpCorrBars);
+   bool allOk=true;
+   for(int s=0;s<g_corrN;s++){ ok[s]=Hedge_LoadReturns(s,tf,InpCorrBars); if(!ok[s]) allOk=false; }
 
+   g_corrPairs=0;
    for(int a=0;a<g_corrN;a++)
       for(int b=0;b<g_corrN;b++)
       {
@@ -173,8 +180,10 @@ void Hedge_ComputeCorr()
          if(!ok[a] || !ok[b]){ g_corr[a][b]=0.0; continue; }
          int used=0;
          g_corr[a][b]=Hedge_Pearson(a,b,used);
-         if(a==0) g_corrPairs=used;
+         if(a==0 && used>g_corrPairs) g_corrPairs=used;
       }
+   if(allOk) g_corrRetryAt=0;
+   else    { g_corrBar=0; g_corrRetryAt=TimeLocal()+30; }
 }
 
 int Hedge_IndexOf(const string sym)

@@ -168,8 +168,8 @@ void Watch_Init()
    for(int k=0;k<g_wlTFn;k++){ if(k>0) tfs+="/"; tfs+=g_tfName[g_wlIdx[k]]; }
    PrintFormat("WATCHLIST: %d symbol(s) on %s - %d indicator handles of the 512 ceiling in use",
                ArraySize(g_W),tfs,used);
-   //--- the panel raises its own height for these rows in OnInit, so
-   //--- Panel_H does not have to be kept in step with the list length
+   //--- v6.96: the watchlist is a panel tab; up to 24 pairs fit its grid
+   //--- without the panel growing, so the list length is free
 }
 
 void Watch_Deinit()
@@ -288,5 +288,17 @@ color Watch_RowColor(const int i)
 {
    if(!g_W[i].ready) return C_DIM;
    return DirColor(g_W[i].dir);
+}
+
+//--- v6.96: one short cell, for the tab's grid when the list is too long
+//--- for a row per pair. `narrow` swaps the label for an arrow so that
+//--- three columns fit.
+string Watch_Cell(const int i,const bool narrow)
+{
+   if(!g_W[i].ready) return StringFormat("%-9s loading",g_W[i].name);
+   if(narrow)
+      return StringFormat("%-9s %s %3.0f%% %-1s",g_W[i].name,
+                          (g_W[i].dir>0 ? "▲" : g_W[i].dir<0 ? "▼" : "●"),g_W[i].buyPct,g_W[i].grade);
+   return StringFormat("%-9s %-12s %3.0f%% %-1s",g_W[i].name,g_W[i].label,g_W[i].buyPct,g_W[i].grade);
 }
 //+------------------------------------------------------------------+
