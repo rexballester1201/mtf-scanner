@@ -170,6 +170,50 @@ string Api_BuildCore()
      +JInt("pass",g_V.pass)+","+JInt("total",g_V.total)+","
      +JStr("head",g_V.head)+"},";
 
+   //--- signal history (v6.94). The ensemble at each lookback, RECOMPUTED from
+   //--- the bars that had closed by then - see AB_History.mqh.
+   //---
+   //--- OMITTED, not sent empty, when the strip is switched off. readHistory()
+   //--- returns null on an absent key and the dashboard draws nothing, so an
+   //--- old or disabled feed looks like one instead of like a broken strip.
+   //---
+   //--- "checks" states how many checks the grades rest on. A past moment
+   //--- cannot reconstruct session, news or spread, so history is graded on
+   //--- fewer checks than the live verdict; the dashboard should say so rather
+   //--- than set the two grades side by side as if they were the same measure.
+   //---
+   //--- The "now" row sends move and result as null, not 0 and "no_call":
+   //--- nothing was compared, and a zero would read as "flat since now".
+   if(InpShowHistory && g_histN>0)
+   {
+      const double hBid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      const int    hDg =m_symbol.Digits();
+      j+="\"history\":{"+JInt("checks",(InpVerdictUseConfirm?4:3))+",\"rows\":[";
+      for(int k=0;k<g_histN;k++)
+      {
+         if(k>0) j+=",";
+         const HistRow r=g_hist[k];
+         j+="{"+JStr("span",Hist_Span(r.mins))+","+JInt("mins",r.mins)+","+JBool("ok",r.ok)+",";
+         j+=JInt("ready_tfs",r.readyN)+","+JNum("buy_pct",r.buyPct,1)+","+JInt("dir",r.dir)+",";
+         j+=JStr("label",r.label)+","+JStr("action",(r.act>0?"BUY":r.act<0?"SELL":"WAIT"))+",";
+         j+=JStr("grade",r.grade)+",";
+         if(r.mins==0)
+            j+=JNum("price_then",hBid,hDg)+",\"move\":null,\"result\":null}";
+         else if(!r.ok || r.priceThen<=0)
+            j+="\"price_then\":null,\"move\":null,\"result\":null}";
+         else
+         {
+            double mv=0;
+            const string res=Hist_Result(r,hBid,mv);
+            j+=JNum("price_then",r.priceThen,hDg)+","+JNum("move",mv,hDg)+","+JStr("result",res)+"}";
+         }
+      }
+      int held=0,past=0,calls=0,right=0;
+      Hist_Summary(hBid,held,past,calls,right);
+      j+="],\"summary\":{"+JInt("same_side",held)+","+JInt("compared",past)+","
+        +JInt("calls",calls)+","+JInt("right",right)+"}},";
+   }
+
    //--- filters
    j+="\"filters\":{"+JStr("session",g_sessionMsg)+","+JBool("session_block",g_sessionBlock)+","
      +JStr("news",g_newsMsg)+","+JBool("news_block",g_newsBlock)+","

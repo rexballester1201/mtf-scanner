@@ -203,7 +203,7 @@ void Watch_AnalyzeOne(const int i)
       const datetime bt=iTime(g_W[i].name,g_tf[t],0);
       if(bt==0 || bt!=g_W[i].lastBar[t] || !g_W[i].R[t].ready)
       {
-         AnalyzeOne(g_W[i].name,g_tf[t],g_W[i].H[t],g_W[i].R[t]);
+         AnalyzeOne(g_W[i].name,g_tf[t],g_W[i].H[t],g_W[i].R[t],1);
          g_W[i].lastBar[t]=bt;
       }
       if(!g_W[i].R[t].ready) continue;

@@ -50,7 +50,7 @@ the engine can never tell two stories about one bar. It places nothing.
 
 ## Install
 
-1. Copy `MTF_Scanner3.mq5` and the seven `AB_*.mqh` files into `MQL5/Experts/` in your
+1. Copy `MTF_Scanner3.mq5` and the eight `AB_*.mqh` files into `MQL5/Experts/` in your
    terminal's data folder.
 2. Compile in MetaEditor (F7). It builds at 0 errors, 0 warnings.
 3. Attach to a chart and allow algorithmic trading.
@@ -80,13 +80,14 @@ itself there.
 
 ```
 MTF_Scanner3.mq5   the EA: panel, signal core, verdict card
+AB_State.mqh       peaks, HALT latch and day anchor, kept across restarts
+AB_Journal.mqh     ENTRY / EXIT rows with the full ensemble state; MFE, MAE, initial R
+AB_Tester.mqh      custom optimisation criterion; per-pass frames to CSV
+AB_Trader.mqh      the trader's journal: your decisions, graded against the panel
+AB_Watch.mqh       the same ensemble across other pairs, display only
+AB_Hedge.mqh       currency exposure netting and correlation-based offsets
+AB_History.mqh     the ensemble at past moments, recomputed from closed bars
 AB_Api.mqh         JSON push to a web dashboard
-AB_Trader.mqh      order placement and management
-AB_Hedge.mqh       hedging logic
-AB_Watch.mqh       position monitoring
-AB_State.mqh       persisted state
-AB_Journal.mqh     trade journalling
-AB_Tester.mqh      Strategy Tester harness
 ```
 
 ## A note for contributors

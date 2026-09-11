@@ -713,10 +713,10 @@
 //+------------------------------------------------------------------+
 #property copyright "AstroBot MTF Scanner"
 #property link      "https://astrobot-ea.live"
-#property version   "6.92"
+#property version   "6.94"
 #property strict
 
-#define AB_VERSION "6.92"   // v6.1: one place for the number the ready-line and the journal print
+#define AB_VERSION "6.94"   // v6.1: one place for the number the ready-line and the journal print
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -974,6 +974,12 @@ input string    InpWatchSymbols          = "";            // InpWatchSymbols - O
 input ENUM_WTF  InpWatchTFs              = WTF_M15_D1;    // InpWatchTFs - Timeframes per watched symbol - this is the handle budget
 input bool      InpWatchSortByConviction = true;          // InpWatchSortByConviction - Strongest reading first, rather than the order you typed
 
+input group "=== Signal history (v6.93) ==="
+//--- What the ensemble said at each lookback, recomputed from closed bars,
+//--- plus where price has gone since. A consistency check more than proof.
+input bool     InpShowHistory   = true;                // InpShowHistory - Show the ensemble 15m, 30m, 1h, 4h and 1d ago
+input string   InpHistLookbacks = "15,30,60,240,1440";  // InpHistLookbacks - Lookbacks in MINUTES, comma separated (up to 6)
+
 input group "=== JSON feed to a website (v6.9) ==="
 //--- The URL must ALSO be whitelisted by hand: Tools > Options > Expert
 //--- Advisors > "Allow WebRequest for listed URL". Code cannot do it. Until
@@ -1190,8 +1196,8 @@ ABVerdict g_V;
 //--- forward decls
 void   BuildVerdict();
 //--- v6.7: the ensemble, for any symbol - the watchlist calls the same code
-void   AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TFResult &r);
-bool   TFDataReadyFor(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H);
+void   AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TFResult &r,const int shift);
+bool   TFDataReadyFor(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,const int shift);
 int    MinBarsNeeded();
 bool   HandleHasBars(int h);
 string LabelFromNet(double net,bool ranging,int &dir);
@@ -1258,6 +1264,10 @@ bool   ModifyPos(const ulong ticket,const double sl,const double tp,const long m
 #include "AB_Trader.mqh"     // v6.6: the TRADER's journal — your decisions, graded against the panel
 #include "AB_Watch.mqh"      // v6.7: the same ensemble across other pairs, display only
 #include "AB_Hedge.mqh"      // v6.8: currency exposure netting and correlation-based offsets
+//--- v6.94: History BEFORE Api. The feed now reads g_hist, and MQL5 needs a
+//--- global declared before any function that reads it - functions resolve
+//--- in any order, variables do not.
+#include "AB_History.mqh"    // v6.93: the ensemble at past moments, recomputed from closed bars
 #include "AB_Api.mqh"        // v6.9: push the whole panel state to a website as JSON
 
 //+------------------------------------------------------------------+
@@ -1303,6 +1313,11 @@ private:
    //--- v6.5: the verdict card
    CPanel  m_bandV;
    CLabel  m_vHead, m_vLev, m_vPros, m_vCons;
+   //--- v6.93: signal history, directly under the verdict it qualifies
+   CPanel  m_bandHs;
+   CLabel  m_hsHdr;
+   CLabel  m_hs[MAX_HIST_ROWS];
+   int     m_hsRows;
    CLabel  m_fltHdr, m_flt;
    CLabel  m_tkHdr, m_lbLot, m_lbRisk, m_lbCap, m_lbSL, m_lbTP, m_est, m_pos;
    CEdit   m_edLot, m_edRisk, m_edSL, m_edTP;
@@ -1555,12 +1570,28 @@ bool CScannerPanel::BuildControls()
    //--- v6.5: THE VERDICT CARD. Placed directly under the gauge, because
    //--- it is the line a person acts on and everything above it is only
    //--- the evidence behind it. Everything BELOW is pushed down by VY.
-   const int VY = 76;
+   //--- v6.93: the history strip sits between the verdict card and the
+   //--- filters, so everything below moves down by its height as well
+   const int HB = Hist_BlockH();
+   const int VY = 76 + HB;
    if(!MkPanel(m_bandV,"bdv", BX, 206+DY, BW, 72, C_CARD, C_BORDER)) return false;
    if(!MkLabel(m_vHead,"vh",  L+4, 209+DY, W-8, "-", C_TEXT, 10)) return false;
    if(!MkLabel(m_vLev, "vl",  L+4, 228+DY, W-8, "-", C_DIM,   8)) return false;
    if(!MkLabel(m_vPros,"vp",  L+4, 244+DY, W-8, "-", C_BULL,  8)) return false;
    if(!MkLabel(m_vCons,"vc",  L+4, 260+DY, W-8, "-", C_BEAR,  8)) return false;
+
+   //--- v6.93: SIGNAL HISTORY. Under the verdict because it answers the
+   //--- question the verdict raises: has it been saying this for a while?
+   m_hsRows=0;
+   if(HB>0)
+   {
+      const int hy=282+DY;
+      if(!MkPanel(m_bandHs,"bdhs", BX, hy, BW, 17, C_CARD)) return false;
+      if(!MkLabel(m_hsHdr,"hsh", L+4, hy+1, W, "SIGNAL HISTORY", C_HEAD)) return false;
+      m_hsRows=MathMin(MAX_HIST_ROWS, 2+g_histCfgN);
+      for(int i=0;i<m_hsRows;i++)
+         if(!MkLabel(m_hs[i],"hs"+IntegerToString(i), L, hy+20+i*14, W, "", C_DIM, 8)) return false;
+   }
 
    //--- from here down, one offset carries both the extra MTF row and the
    //--- verdict card, so every coordinate still reads as its original number
@@ -1761,6 +1792,19 @@ void CScannerPanel::Refresh()
    FitLabel(m_vPros,"vp", StringLen(g_V.pros)>0 ? "FOR      "+g_V.pros : "", C_BULL, 8, vW);
    FitLabel(m_vCons,"vc", StringLen(g_V.cons)>0 ? "AGAINST  "+g_V.cons : "AGAINST  nothing",
             StringLen(g_V.cons)>0 ? C_BEAR : C_DIM, 8, vW);
+
+   //--- v6.93: signal history
+   if(m_hsRows>0)
+   {
+      FitLabel(m_hsHdr,"hsh","SIGNAL HISTORY  (same ensemble on closed bars, and the move since)",
+               C_HEAD, 9, m_lblW);
+      for(int i=0;i<m_hsRows;i++)
+      {
+         string txt=""; color c=C_DIM;
+         Hist_RowText(i,txt,c);
+         FitLabel(m_hs[i],"hs"+IntegerToString(i),txt,c,8,m_lblW);
+      }
+   }
 
    FitLabel(m_flt,"fl",StringFormat("Session: %s   |   News: %s   |   Vol: %s", g_sessionMsg, g_newsMsg, g_volMsg),
             (g_sessionBlock||g_newsBlock)?C_WARN:C_TEXT, 8, m_lblW-62);
@@ -2010,6 +2054,7 @@ int OnInit()
    //--- v6.7: the watchlist opens its handles before the panel is built,
    //--- because the panel sizes its list section from the symbol count
    Watch_Init();
+   Hist_Init();         // v6.93: parse the lookbacks before the panel sizes itself around them
 
    g_ui_lot   = InpDefaultLot;
    g_ui_risk  = MathMin(InpDefaultRisk,InpMaxRiskPct);
@@ -2085,7 +2130,7 @@ int OnInit()
    //--- setting is honoured and a shorter one is simply raised.
    int panelH = Panel_H;
    {
-      int y = 506 + (TF_COUNT-6)*14 + 76;
+      int y = 506 + (TF_COUNT-6)*14 + 76 + Hist_BlockH();
       if(Watch_Count()>0)  y += 20 + Watch_Count()*14;
       if(Hedge_Enabled())  y += 20 + (1+MAX_HEDGE_ROWS)*14;
       const int needed = y + 2 + 24;
@@ -2312,14 +2357,19 @@ bool HandleHasBars(int h)
 //| silently zeroed. Either everything is ready or the row says so.   |
 //+------------------------------------------------------------------+
 //--- v6.7: symbol-aware, so the watchlist gets the identical gate
-bool TFDataReadyFor(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H)
+//--- v6.93: shift-aware. A reading `shift` bars back needs that many more
+//--- bars of history, and every buffer must be calculated as deep as the
+//--- furthest bar the votes read (shift+2). At shift 1 this is exactly the
+//--- old test: MinBarsNeeded() bars, and BarsCalculated >= 4.
+bool TFDataReadyFor(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,const int shift)
 {
-   if(iBars(sym,tf) < MinBarsNeeded()) return false;
-   return (HandleHasBars(H.emaF) && HandleHasBars(H.emaM) &&
-           HandleHasBars(H.emaS) && HandleHasBars(H.rsi)  &&
-           HandleHasBars(H.adx)  && HandleHasBars(H.atr));
+   if(iBars(sym,tf) < MinBarsNeeded()+shift) return false;
+   const int need=shift+3;
+   return (BarsCalculated(H.emaF)>=need && BarsCalculated(H.emaM)>=need &&
+           BarsCalculated(H.emaS)>=need && BarsCalculated(H.rsi) >=need &&
+           BarsCalculated(H.adx) >=need && BarsCalculated(H.atr) >=need);
 }
-bool TFDataReady(int i){ return TFDataReadyFor(_Symbol,g_tf[i],g_H[i]); }
+bool TFDataReady(int i){ return TFDataReadyFor(_Symbol,g_tf[i],g_H[i],1); }
 
 //+------------------------------------------------------------------+
 //| H6: no STRONG calls while ADX says the timeframe is ranging.      |
@@ -2359,26 +2409,29 @@ string LabelFromNet(double net,bool ranging,int &dir)
 //| drift out of agreement with the panel the first time either       |
 //| changed.                                                          |
 //+------------------------------------------------------------------+
-void AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TFResult &r)
+//--- v6.93: `shift` is the bar the votes read. 1 = the last closed bar, which
+//--- is every live caller. The signal history passes the bar that was last
+//--- closed at some past moment, and gets exactly what the panel showed then.
+void AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TFResult &r,const int shift)
 {
    r.ready=false; r.bullPts=0; r.bearPts=0; r.buyPct=50.0; r.dir=0;
    r.label="NEUTRAL"; r.breakdown=""; r.adx=0; r.ranging=false; r.atrVal=0;
    r.stkS=0; r.slpS=0; r.dmiS=0; r.rsiS=0; r.donS=0; r.adS=0;
    r.stkV=0; r.slpV=0; r.dmiV=0; r.rsiV=0; r.donV=0; r.adV=0;
 
-   if(!TFDataReadyFor(sym,tf,H)) return;
+   if(!TFDataReadyFor(sym,tf,H,shift)) return;
 
-   const double price=iClose(sym,tf,1);
+   const double price=iClose(sym,tf,shift);
    if(price<=0) return;
 
    double ef[],em[],es[];
    double rv,adx,pdi,mdi,atr;
    //--- M9: buffers 1 and 2 of iADX are +DI and -DI. They were fetched
    //--- by the handle and never read; now they are a vote of their own.
-   if(!Copy3(H.emaF,0,1,ef)  || !Copy3(H.emaM,0,1,em) ||
-      !Copy3(H.emaS,0,1,es)  || !Copy1(H.rsi,0,1,rv)  ||
-      !Copy1(H.adx,0,1,adx)  || !Copy1(H.adx,1,1,pdi) ||
-      !Copy1(H.adx,2,1,mdi)  || !Copy1(H.atr,0,1,atr))
+   if(!Copy3(H.emaF,0,shift,ef)  || !Copy3(H.emaM,0,shift,em) ||
+      !Copy3(H.emaS,0,shift,es)  || !Copy1(H.rsi,0,shift,rv)  ||
+      !Copy1(H.adx,0,shift,adx)  || !Copy1(H.adx,1,shift,pdi) ||
+      !Copy1(H.adx,2,shift,mdi)  || !Copy1(H.atr,0,shift,atr))
    { r.ready=false; return; }     // any short copy -> the WHOLE TF is not ready
 
    r.ready   = true;
@@ -2425,8 +2478,8 @@ void AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TF
    //--- 5. DON — RANGE POSITION. Where the close sits inside the last
    //--- N bars' own high/low channel: a pure range measurement with no
    //--- average of any kind in it.
-   const int hiSh=iHighest(sym,tf,MODE_HIGH,InpDonchianBars,1);
-   const int loSh=iLowest (sym,tf,MODE_LOW, InpDonchianBars,1);
+   const int hiSh=iHighest(sym,tf,MODE_HIGH,InpDonchianBars,shift);
+   const int loSh=iLowest (sym,tf,MODE_LOW, InpDonchianBars,shift);
    if(hiSh>=0 && loSh>=0)
    {
       const double hh=iHigh(sym,tf,hiSh), ll=iLow(sym,tf,loSh);
@@ -2447,12 +2500,12 @@ void AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TF
    //--- rest of the set.
    long vv[]; ArraySetAsSeries(vv,true);
    const int nb=MathMax(1,InpADBars);
-   if(CopyTickVolume(sym,tf,1,nb,vv)==nb)
+   if(CopyTickVolume(sym,tf,shift,nb,vv)==nb)
    {
       double num=0, den=0;
       for(int k=0;k<nb;k++)
       {
-         const double h=iHigh(sym,tf,1+k), l=iLow(sym,tf,1+k), c=iClose(sym,tf,1+k);
+         const double h=iHigh(sym,tf,shift+k), l=iLow(sym,tf,shift+k), c=iClose(sym,tf,shift+k);
          const double rng=h-l, v=(double)vv[k];
          if(rng>0 && v>0){ num += (((c-l)-(h-c))/rng)*v; den += v; }
       }
@@ -2491,7 +2544,7 @@ void AnalyzeOne(const string sym,const ENUM_TIMEFRAMES tf,const MTFHandles &H,TF
 }
 
 //--- the chart symbol's own row, unchanged in behaviour
-void AnalyzeTF(int i){ AnalyzeOne(_Symbol,g_tf[i],g_H[i],g_R[i]); }
+void AnalyzeTF(int i){ AnalyzeOne(_Symbol,g_tf[i],g_H[i],g_R[i],1); }
 
 void AnalyzeAll()
 {
@@ -2551,6 +2604,7 @@ void AnalyzeAll()
    BuildVerdict();      // v6.5/H3: display only, and it reads what the engine reads
    Watch_Analyze();     // v6.7: other pairs, bar-gated like everything else
    Hedge_Update();      // v6.8: currency netting every pass, correlation once a bar
+   Hist_Update();       // v6.93: past readings, once per M1 bar
 }
 
 //+------------------------------------------------------------------+
